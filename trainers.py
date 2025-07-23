@@ -453,7 +453,7 @@ class CoCoVinTrainer(BaseTrainer):
                 self.best_macrof1 = tt_macrof1_epoch
                 # save_model_dir = utils.save_model(self.model, self.info_dict)
                 if val_acc_epoch > self.best_pretr_val_acc:
-                    self.pretr_model_dir = save_model_dir
+                    # self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
 
             if i % self.info_dict['eta'] == 0:
@@ -705,7 +705,7 @@ class CoCoVinTrainer(BaseTrainer):
     def shuffle_feat(self, nfeat):
         pos_feat = nfeat.clone().detach()
 
-        nid = torch.arange(self.g.num_nodes)
+        nid = torch.arange(self.g.num_nodes, device=self.info_dict['device'])
         labels = self.pred_labels
         if labels == None:
             raise ValueError('The class of unlabeled nodes have not been estimated!')
@@ -749,7 +749,7 @@ class CoCoVinTrainer(BaseTrainer):
 
     def gen_neg_nids(self):
         num_nodes = self.g.num_nodes
-        nid = torch.arange(num_nodes)
+        nid = torch.arange(num_nodes, device=self.info_dict['device'])
         labels = self.pred_labels
 
         # randomly sample an instance as the negative sample, which is from a (estimated) different class
