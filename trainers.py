@@ -537,11 +537,230 @@ class CoCoVinTrainer(BaseTrainer):
 
     # --- Include all helper methods from ViolinTrainer ---
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
+    def add_VOs(self):
+        '''
+        add virtual links based on the ground-truth class labels, within the whole graph
+        :return:
+        '''
+        labels = self.pred_labels.cpu()
+        conf = self.pred_conf.cpu()
+        conf_mask = conf >= self.conf_thrs
+
+        ori_adj = self.ori_edge_index
+        print('The number of edges before adding virtual links: {}'.format(ori_adj.shape[1]))
+
+        # number of virtual links to be added for each node
+        n_vo = self.info_dict['m']
+        virt_edges = []
+        tr_mask = self.g.train_mask.bool()
+        other_mask = ~tr_mask
+        # construct virtual links
+        label_list = list(set(labels.numpy().tolist()))
+        for i in range(n_vo):
+            dsts = torch.arange(self.g.num_nodes)
+            srcs = -1 * torch.ones_like(dsts)
+            for k in label_list:
+                # the indices of nodes that are from the k-th class
+                k_mask = labels == k
+                tr_k_mask = k_mask * tr_mask  # training nodes in the k-th class
+                other_k_mask = k_mask * other_mask  # unlabeled nodes that predicted to be in the k-th class
+
+                # add virtual links for labeled nodes
+                # randomly select nodes from the whole graph
+                tr_vl_k_idx = torch.arange(self.g.num_nodes)[k_mask]
+                tr_vl_rand_idx = torch.from_numpy(np.random.choice(tr_vl_k_idx, tr_k_mask.sum().item(), replace=True))
+                srcs[tr_k_mask] = tr_vl_rand_idx
+
+                # add virtual links for the unlabeled nodes
+                other_vl_k_idx = torch.arange(self.g.num_nodes)[k_mask]
+                other_vl_rand_idx = torch.from_numpy(np.random.choice(other_vl_k_idx, other_k_mask.sum().item(),
+                                                                    replace=True))
+                srcs[other_k_mask] = other_vl_rand_idx
+
+            # qualified edges
+            qua_mask = srcs >= 0
+            qua_mask = conf_mask * qua_mask
+            srcs = srcs[qua_mask]
+            dsts = dsts[qua_mask]
+
+            vl_i = torch.cat([srcs.unsqueeze(0), dsts.unsqueeze(0)], dim=0)
+            virt_edges.append(vl_i)
+
+        virt_edges = torch.cat(virt_edges, dim=1)
+        rev_virt_edges = torch.cat([virt_edges[1].unsqueeze(0), virt_edges[0].unsqueeze(0)], dim=0)
+        full_virt_edges = torch.cat((virt_edges, rev_virt_edges), dim=1)
+
+        cur_adj = torch.cat((ori_adj, full_virt_edges), dim=1)
+        cur_adj = pyg.utils.coalesce(cur_adj)
+        print('The number of edges after adding virtual links: {}'.format(cur_adj.shape[1]))
+        self.g.edge_index = cur_adj
+        self.virt_edge_index = full_virt_edges
+
+    def eval_epoch(self, epoch_i):
+        tic = time.time()
+        self.model.eval()
+        val_labels = self.val_y.to(self.info_dict['device'])
+        tt_labels = self.tt_y.to(self.info_dict['device'])
+        with torch.set_grad_enabled(False):
+            x_data = self.g.x.to(self.info_dict['device'])
+            ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
+            ori_logits = self.model(x_data, ori_edge_index)
+            ori_conf = torch.softmax(ori_logits, dim=1)
+            val_epoch_loss = self.crs_entropy_fn(ori_logits[self.val_nid], val_labels)
+            tt_epoch_loss = self.crs_entropy_fn(ori_logits[self.tt_nid], tt_labels)
+            _, val_preds = torch.max(ori_logits[self.val_nid], dim=1)
+            _, tt_preds = torch.max(ori_logits[self.tt_nid], dim=1)
+
+            val_epoch_acc = torch.sum(val_preds == val_labels).cpu().item() * 1.0 / val_labels.shape[0]
+            tt_epoch_acc = torch.sum(tt_preds == tt_labels).cpu().item() * 1.0 / tt_labels.shape[0]
+            val_epoch_micro_f1 = metrics.f1_score(val_labels.cpu().numpy(), val_preds.cpu().numpy(), average="micro")
+            val_epoch_macro_f1 = metrics.f1_score(val_labels.cpu().numpy(), val_preds.cpu().numpy(), average="macro")
+            tt_epoch_micro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="micro")
+            tt_epoch_macro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="macro")
+
+        toc = time.time()
+        if epoch_i % 10 == 0:
+            print("Epoch {} | validation loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(), val_epoch_acc))
+            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
+            print("Epoch {} | test loss: {:.4f} | testing accuracy: {:.4f}".format(epoch_i, tt_epoch_loss.cpu().item(), tt_epoch_acc))
+            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(tt_epoch_micro_f1, tt_epoch_macro_f1))
+            print('Elapse time: {:.4f}s'.format(toc - tic))
+        return (val_epoch_loss.cpu().item(), val_epoch_acc, val_epoch_micro_f1, val_epoch_macro_f1), \
+               (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
+
+    def get_pred_labels(self):
+
+        # load the pretrained model and use it to estimate the labels
+        cur_model_state_dict = deepcopy(self.model.state_dict())
+        self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
+
+        self.model.eval()
+        with torch.set_grad_enabled(False):
+            x_data = self.g.x.to(self.info_dict['device'])
+            edge_index = self.ori_edge_index.to(self.info_dict['device'])
+            logits = self.model(x_data, edge_index)
+
+            _, preds = torch.max(logits, dim=1)
+            conf = torch.softmax(logits, dim=1).max(dim=1)[0]
+            self.pred_labels = preds
+            # for training nodes, the estimated labels will be replaced by their ground-truth labels
+            self.pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
+            self.pred_conf = conf
+
+            pretr_val_acc = torch.sum(preds[self.val_nid].cpu() == self.labels[self.val_nid]).item() * 1.0 / \
+                            self.labels[self.val_nid].shape[0]
+            self.best_pretr_val_acc = pretr_val_acc
+
+            # set the confidence threshold
+            self.set_conf_thrs(preds, conf, self.val_nid)
+
+        # reload the current model's parameters
+        self.model.load_state_dict(cur_model_state_dict)
+        self.pred_label_flag = False
+
+    def set_conf_thrs(self, preds, conf, nids):
+
+        # calculate the confidence threshold based on the validation set for adding virtual links
+        preds, conf = preds.cpu(), conf.cpu()
+        val_conf = (conf[nids] * 10).long().cpu().numpy()
+        val_correct_mask = preds[nids] == self.labels[nids]
+        val_wrong_mask = ~val_correct_mask
+        val_correct_conf = val_conf[val_correct_mask]
+        val_wrong_conf = val_conf[val_wrong_mask]
+
+        # the distribution of validation predictions of each confidence interval
+        val_correct_dist = np.bincount(val_correct_conf)
+        if len(val_correct_dist) < 11:  # pad the dist vect if no high confidence predictions occur
+            val_correct_dist = np.hstack((val_correct_dist, np.array([0] * (11 - len(val_correct_dist)))))
+        val_wrong_dist = np.bincount(val_wrong_conf)
+        if len(val_wrong_dist) < 11:
+            val_wrong_dist = np.hstack((val_wrong_dist, np.array([0] * (11 - len(val_wrong_dist)))))
+        val_dist = np.bincount(val_conf)
+        if len(val_dist) < 11:
+            val_dist = np.hstack((val_dist, np.array([0] * (11 - len(val_dist)))))
+
+        # calculate the validation accuracies of each confidence interval
+        val_correct_cumsum = val_correct_dist[::-1].cumsum()[::-1]
+        val_wrong_cumsum = val_wrong_dist[::-1].cumsum()[::-1]
+        val_cumsum = val_dist[::-1].cumsum()[::-1]
+        val_conf_acc = val_correct_cumsum / val_cumsum
+        val_conf_acc[np.isnan(val_conf_acc)] = 0  # zero the nan elements
+
+        acc_thrs = self.info_dict['delta']
+        # calculate the confidence threshold: find the first qualified confidence interval index
+        try:
+            # set the confidence threshold based on the given accuracy requirements
+            self.conf_thrs = (np.where(val_conf_acc > acc_thrs)[0][0] / 10.).item()
+            print('The (dynamic) confidence threshold is: {:.4f}'.format(self.conf_thrs))
+        except IndexError:  ## no confidence interval fulfills the accuracy requirement
+            # find the confidence interval that with the highest acc
+            self.conf_thrs = (np.argmax(val_conf_acc) / 10.).item()
+            print('The confidence requirement is not fulfilled. Use the confidence level with the best acc.')
+            print('The (workaround) confidence threshold is: {:.4f}'.format(self.conf_thrs))
+        return
 
     # --- Include all helper methods from CoCoSTrainer ---
     # shuffle_feat, shuffle_nids, gen_neg_nids
 
-    # NOTE: You need to copy the full implementation of the following methods
-    # into the CoCoS_Violin_Trainer class. They are omitted here for brevity.
-    # from ViolinTrainer: add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
-    # from CoCoSTrainer: shuffle_feat, shuffle_nids, gen_neg_nids
+    def shuffle_feat(self, nfeat):
+        pos_feat = nfeat.clone().detach()
+
+        nid = torch.arange(self.g.num_nodes())
+        labels = self.pred_labels
+        if labels == None:
+            raise ValueError('The class of unlabeled nodes have not been estimated!')
+
+        # generate positive features
+        shuf_nid = torch.zeros_like(nid).to(self.info_dict['device'])
+        for i in range(self.info_dict['out_dim']):
+            # position index of the i-th class
+            i_pos = torch.where(labels == i)[0]
+            # node ids with label class i
+            i_nid = nid[i_pos]
+            # shuffle the i-th class node ids
+            i_shuffle_ind = torch.randperm(len(i_pos)).to(self.info_dict['device'])
+            i_nid_shuffled = i_nid[i_shuffle_ind]
+            # get new id arrangement for the i-th class
+            shuf_nid[i_pos] = i_nid_shuffled.to(self.info_dict['device'])
+        pos_feat[nid] = nfeat[shuf_nid].detach()
+
+        return pos_feat
+
+    def shuffle_nids(self):
+        nid = torch.arange(self.g.num_nodes())
+        labels = self.pred_labels
+        if labels == None:
+            raise ValueError('The class of unlabeled nodes have not been estimated!')
+
+        # randomly sample a positive counterpart for each node
+        shuf_nid = torch.arange(self.g.num_nodes()).to(self.info_dict['device'])
+        for i in range(self.info_dict['out_dim']):
+            # position index of the i-th class
+            i_pos = torch.where(labels == i)[0]
+            # node ids with label class i
+            i_nid = nid[i_pos]
+            # shuffle the i-th class node ids
+            i_shuffle_ind = torch.randperm(len(i_pos)).to(self.info_dict['device'])
+            i_nid_shuffled = i_nid[i_shuffle_ind]
+            # get new id arrangement of the i-th class
+            shuf_nid[i_pos] = i_nid_shuffled.to(self.info_dict['device'])
+
+        return shuf_nid
+
+    def gen_neg_nids(self):
+        num_nodes = self.g.num_nodes()
+        nid = torch.arange(num_nodes)
+        labels = self.pred_labels
+
+        # randomly sample an instance as the negative sample, which is from a (estimated) different class
+        shuf_nid = torch.randperm(num_nodes).to(self.info_dict['device'])
+        for i in range(self.info_dict['out_dim']):
+            sample_prob = 1 / len(nid) * torch.ones_like(nid)
+            # position index of the i-th class
+            i_pos = torch.where(labels == i)[0]
+            # set the sampling prob to be 0 so that the node from the same class will not be sampled
+            sample_prob[i_pos] = 0
+            i_neg = torch.multinomial(sample_prob, len(i_pos), replacement=True).to(self.info_dict['device'])
+            shuf_nid[i_pos] = i_neg
+
+        return shuf_nid
