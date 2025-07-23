@@ -1,0 +1,119 @@
+import argparse
+import torch
+import sys
+import os
+import models
+import models_ogb
+import trainers
+import torch_geometric as pyg
+from torch_geometric.datasets import Planetoid
+from ogb.nodeproppred import PygNodePropPredDataset
+from torch_geometric import transforms
+import numpy as np
+import time
+
+def load_data(db, db_dir='./dataset'):
+    if db in ['Cora', 'CiteSeer', 'PubMed']:
+        data = Planetoid(db_dir, db, transform=transforms.NormalizeFeatures())
+        g = data[0]
+        out_dim = data.num_classes
+    else:
+        raise ValueError('Unknown dataset: {}'.format(db))
+
+    info_dict = {
+        'in_dim': g.x.shape[1],
+        'out_dim': out_dim
+        }
+    return g, info_dict
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    return
+
+def main(args):
+
+    acc_list = []
+    time_cost_list = []
+    for i in range(args.round):
+        set_seed(i)
+        g, info_dict = load_data(args.dataset)
+        info_dict.update(args.__dict__)
+        info_dict.update({'device': torch.device('cpu') if args.gpu == -1 else torch.device('cuda:{}'.format(args.gpu)),})
+
+        info_dict.update({'seed': i})
+
+        # initialize a model
+        model = getattr(models, args.model)(info_dict) if args.dataset != 'ogbn-arxiv' else getattr(models_ogb, args.model)(info_dict)
+        # initialize a trainer
+        backbone_list = ['GCN', 'GAT', 'SAGE', 'JKNet', 'GCN2', 'APPNPNet', 'GIN', 'SGC']
+        if args.model in backbone_list:
+            trainer = getattr(trainers, 'BaseTrainer')(g, model, info_dict)
+        else:
+            info_dict.update({'backbone': args.model[6:]})
+            Dis = getattr(models, 'DisMLP')(info_dict)
+            Dis.to(info_dict['device'])
+            trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis) # changed from ViolinTrainer & added Dis attribute
+
+        model.to(info_dict['device'])
+        print(model)
+        print('\nSTART TRAINING\n')
+        tic = time.time()
+        val_acc, tt_acc, val_acc_fin, tt_acc_fin, microf1, macrof1 = trainer.train()
+        toc = time.time()
+        acc_list.append(tt_acc)
+        time_cost = toc - tic
+        time_cost_list.append(time_cost)
+        print('The time cost of the {} round ({} epochs) is: {}.'.format(i, info_dict['n_epochs'], time_cost))
+
+    print('\n\n')
+    print('The averaged accuracy of {} rounds of experiments on {} is: {}'.format(args.round, args.dataset, np.mean(acc_list)))
+    print('The averaged time cost (seconds/ 100 epochs) of {} rounds is {:.4f}'.format(args.round, np.mean(time_cost_list) / args.n_epochs * 100))
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='the main program to run experiments on small datasets')
+    parser.add_argument("--round", type=int, default=10,
+                        help="number of rounds to repeat the experiment")
+    parser.add_argument("--model", type=str, default='ViolinGCN',
+                        help="model name")
+    parser.add_argument("--dataset", type=str, default='Cora',
+                        help="the dataset for the experiment")
+    parser.add_argument("--n_epochs", type=int, default=300,
+                        help="the number of training epochs")
+    parser.add_argument("--eta", type=int, default=1,
+                        help="the interval (epoch) to override/ update the estimated labels")
+    parser.add_argument("--n_layers", type=int, default=2,
+                        help="the number of hidden layers")
+    parser.add_argument("--hid_dim", type=int, default=16,
+                        help="the hidden dimension of hidden layers in the backbone model")
+    parser.add_argument("--dropout", type=float, default=0.6,
+                        help="dropout rate")
+    parser.add_argument("--gpu", type=int, default=-1,
+                        help="specify the gpu index, set -1 to train on cpu")
+    parser.add_argument("--lr", type=float, default=0.01,
+                        help="the learning rate")
+    parser.add_argument("--weight_decay", type=float, default=5e-4,
+                        help="the weight decay for optimizer")
+    parser.add_argument("--alpha", type=float, default=0.8,
+                        help="coefficient for the consistency loss")
+    parser.add_argument("--gamma", type=float, default=0.6,
+                        help="coefficient for the VO loss")
+    parser.add_argument("--cls_mode", type=str, default='virt',
+                        help="the type of the classification loss (Eq.10), 'virt' only includes the second term, while 'both' inlcudes both terms")
+    parser.add_argument("--delta", type=float, default=0.9,
+                        help="the acc requirement (\delta) to pick node candidates for building VOs")
+    parser.add_argument("--m", type=int, default=1,
+                        help="the number of VOs per node")
+    parser.add_argument("--bn", action='store_true', default=False,
+                        help="a flag to indicate whether use batch-norm for training")
+    # added arguements for CoCoS
+    parser.add_argument("--dis_layers", type=int, default=2,
+                        help="the number of MLP discriminator layers, only for CoCoS-enhanced models")
+    parser.add_argument("--emb_hid_dim", type=int, default=64,
+                        help="the hidden dimension of the hidden layers in the MLP discriminator")
+    parser.add_argument('--beta', type=float, default=0.6, help='weight for cocos contrastive loss')
+
+    args = parser.parse_args()
+
+    main(args)
