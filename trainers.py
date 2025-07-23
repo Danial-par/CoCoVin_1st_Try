@@ -451,7 +451,7 @@ class CoCoVinTrainer(BaseTrainer):
                 self.best_tt_acc = tt_acc_epoch
                 self.best_microf1 = tt_microf1_epoch
                 self.best_macrof1 = tt_macrof1_epoch
-                save_model_dir = utils.save_model(self.model, self.info_dict)
+                # save_model_dir = utils.save_model(self.model, self.info_dict)
                 if val_acc_epoch > self.best_pretr_val_acc:
                     self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
@@ -705,7 +705,7 @@ class CoCoVinTrainer(BaseTrainer):
     def shuffle_feat(self, nfeat):
         pos_feat = nfeat.clone().detach()
 
-        nid = torch.arange(self.g.num_nodes())
+        nid = torch.arange(self.g.num_nodes)
         labels = self.pred_labels
         if labels == None:
             raise ValueError('The class of unlabeled nodes have not been estimated!')
@@ -733,7 +733,7 @@ class CoCoVinTrainer(BaseTrainer):
             raise ValueError('The class of unlabeled nodes have not been estimated!')
 
         # randomly sample a positive counterpart for each node
-        shuf_nid = torch.arange(self.g.num_nodes()).to(self.info_dict['device'])
+        shuf_nid = torch.arange(self.g.num_nodes).to(self.info_dict['device'])
         for i in range(self.info_dict['out_dim']):
             # position index of the i-th class
             i_pos = torch.where(labels == i)[0]
@@ -748,7 +748,7 @@ class CoCoVinTrainer(BaseTrainer):
         return shuf_nid
 
     def gen_neg_nids(self):
-        num_nodes = self.g.num_nodes()
+        num_nodes = self.g.num_nodes
         nid = torch.arange(num_nodes)
         labels = self.pred_labels
 
