@@ -36,12 +36,12 @@ def main(args):
     acc_list = []
     time_cost_list = []
     for i in range(args.round):
-        set_seed(i)
         g, info_dict = load_data(args.dataset)
+        set_seed(info_dict['seed'])
         info_dict.update(args.__dict__)
         info_dict.update({'device': torch.device('cpu') if args.gpu == -1 else torch.device('cuda:{}'.format(args.gpu)),})
 
-        info_dict.update({'seed': i})
+        info_dict.update({'seed': info_dict['seed'] + 1})
 
         # initialize a model
         model = getattr(models, args.model)(info_dict) if args.dataset != 'ogbn-arxiv' else getattr(models_ogb, args.model)(info_dict)
@@ -49,11 +49,16 @@ def main(args):
         backbone_list = ['GCN', 'GAT', 'SAGE', 'JKNet', 'GCN2', 'APPNPNet', 'GIN', 'SGC']
         if args.model in backbone_list:
             trainer = getattr(trainers, 'BaseTrainer')(g, model, info_dict)
-        else:
-            info_dict.update({'backbone': args.model[6:]})
+        elif args.model.startswith('CoCoVin'):
+            info_dict.update({'backbone': args.model[7:]})
             Dis = getattr(models, 'DisMLP')(info_dict)
             Dis.to(info_dict['device'])
-            trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis) # changed from ViolinTrainer & added Dis attribute
+            trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis)
+        elif args.model.startswith('Violin'):
+            info_dict.update({'backbone': args.model[6:]})
+            trainer = getattr(trainers, 'ViolinTrainer')(g, model, info_dict)
+        else:
+            raise ValueError('Unknown model: {}'.format(args.model))
 
         model.to(info_dict['device'])
         print(model)
@@ -113,6 +118,10 @@ if __name__ == '__main__':
     parser.add_argument("--emb_hid_dim", type=int, default=64,
                         help="the hidden dimension of the hidden layers in the MLP discriminator")
     parser.add_argument('--beta', type=float, default=0.6, help='weight for cocos contrastive loss')
+
+    # extra added arguements
+    parser.add_argument("--seed", type=int, default=0,
+                        help="the random seed to reproduce the result")
 
     args = parser.parse_args()
 

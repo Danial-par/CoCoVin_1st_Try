@@ -457,6 +457,9 @@ class CoCoVinTrainer(BaseTrainer):
                     self.pred_label_flag = True
 
             if i % self.info_dict['eta'] == 0:
+                print("Training acc: {:.4f}, val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
+                      .format(tr_acc, val_acc_epoch, tt_acc_epoch, tr_microf1, tr_macrof1))
+                print("___________________________________________________________________________________")
                 print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
                       .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
 
@@ -547,7 +550,7 @@ class CoCoVinTrainer(BaseTrainer):
         conf_mask = conf >= self.conf_thrs
 
         ori_adj = self.ori_edge_index
-        print('The number of edges before adding virtual links: {}'.format(ori_adj.shape[1]))
+        # print('The number of edges before adding virtual links: {}'.format(ori_adj.shape[1]))
 
         # number of virtual links to be added for each node
         n_vo = self.info_dict['m']
@@ -592,7 +595,7 @@ class CoCoVinTrainer(BaseTrainer):
 
         cur_adj = torch.cat((ori_adj, full_virt_edges), dim=1)
         cur_adj = pyg.utils.coalesce(cur_adj)
-        print('The number of edges after adding virtual links: {}'.format(cur_adj.shape[1]))
+        # print('The number of edges after adding virtual links: {}'.format(cur_adj.shape[1]))
         self.g.edge_index = cur_adj
         self.virt_edge_index = full_virt_edges
 
