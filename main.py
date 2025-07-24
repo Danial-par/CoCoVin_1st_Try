@@ -37,11 +37,11 @@ def main(args):
     time_cost_list = []
     for i in range(args.round):
         g, info_dict = load_data(args.dataset)
-        set_seed(info_dict['seed'])
+        set_seed(args.seed)
         info_dict.update(args.__dict__)
         info_dict.update({'device': torch.device('cpu') if args.gpu == -1 else torch.device('cuda:{}'.format(args.gpu)),})
 
-        info_dict.update({'seed': info_dict['seed'] + 1})
+        args.seed = args.seed + 1
 
         # initialize a model
         model = getattr(models, args.model)(info_dict) if args.dataset != 'ogbn-arxiv' else getattr(models_ogb, args.model)(info_dict)
