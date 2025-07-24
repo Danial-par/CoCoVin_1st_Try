@@ -168,7 +168,7 @@ class ViolinTrainer(BaseTrainer):
         conf_mask = conf >= self.conf_thrs
 
         ori_adj = self.ori_edge_index
-        print('The number of edges before adding virtual links: {}'.format(ori_adj.shape[1]))
+        # print('The number of edges before adding virtual links: {}'.format(ori_adj.shape[1]))
 
         # number of virtual links to be added for each node
         n_vo = self.info_dict['m']
@@ -213,7 +213,7 @@ class ViolinTrainer(BaseTrainer):
 
         cur_adj = torch.cat((ori_adj, full_virt_edges), dim=1)
         cur_adj = pyg.utils.coalesce(cur_adj)
-        print('The number of edges after adding virtual links: {}'.format(cur_adj.shape[1]))
+        # print('The number of edges after adding virtual links: {}'.format(cur_adj.shape[1]))
         self.g.edge_index = cur_adj
         self.virt_edge_index = full_virt_edges
 
@@ -456,87 +456,98 @@ class CoCoVinTrainer(BaseTrainer):
                     # self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
 
-            if i % self.info_dict['eta'] == 0:
-                print("Training acc: {:.4f}, val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
-                      .format(tr_acc, val_acc_epoch, tt_acc_epoch, tr_microf1, tr_macrof1))
-                print("___________________________________________________________________________________")
-                print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
-                      .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
+            # if i % self.info_dict['eta'] == 0:
+            #     print("Training acc: {:.4f}, val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
+            #           .format(tr_acc, val_acc_epoch, tt_acc_epoch, tr_microf1, tr_macrof1))
+            #     print("___________________________________________________________________________________")
+            #     print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
+            #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
 
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
     def train_epoch(self, epoch_i):
-        # Violin training setup
-        cls_nids = self.tr_nid
-        cls_labels = self.tr_y.to(self.info_dict['device'])
-        con_nids = torch.cat((self.val_nid, self.tt_nid))
+            # Violin training setup
+            cls_nids = self.tr_nid
+            cls_labels = self.tr_y.to(self.info_dict['device'])
+            con_nids = torch.cat((self.val_nid, self.tt_nid))
 
-        # CoCoS training setup
-        ctr_nids = torch.cat((self.val_nid, self.tt_nid))
-        ctr_labels_pos = torch.ones_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
-        ctr_labels_neg = torch.zeros_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
+            # CoCoS training setup
+            ctr_nids = torch.cat((self.val_nid, self.tt_nid))
+            ctr_labels_pos = torch.ones_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
+            ctr_labels_neg = torch.zeros_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
 
-        tic = time.time()
-        self.model.train()
-        self.Dis.train()
-        with torch.set_grad_enabled(True):
-            # Violin forward passes
-            x_data = self.g.x.to(self.info_dict['device'])
-            ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
-            aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
-            virt_edge_index = self.virt_edge_index.to(self.info_dict['device'])
-            ori_logits = self.model(x_data, ori_edge_index)
-            ori_conf = torch.softmax(ori_logits, dim=1)
-            aug_logits = self.model(x_data, aug_edge_index)
-            aug_conf = torch.softmax(aug_logits, dim=1)
+            tic = time.time()
+            self.model.train()
+            self.Dis.train()
+            with torch.set_grad_enabled(True):
+                # Violin forward passes
+                x_data = self.g.x.to(self.info_dict['device'])
+                ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
+                aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
+                virt_edge_index = self.virt_edge_index.to(self.info_dict['device'])
+                ori_logits = self.model(x_data, ori_edge_index)
+                ori_conf = torch.softmax(ori_logits, dim=1)
+                aug_logits = self.model(x_data, aug_edge_index)
+                aug_conf = torch.softmax(aug_logits, dim=1)
 
-            # CoCoS forward passes
-            shuf_feat = self.shuffle_feat(x_data)
-            shuf_logits = self.model(shuf_feat, ori_edge_index) # Using original graph structure
+                # CoCoS forward passes
+                shuf_feat = self.shuffle_feat(x_data)
+                shuf_logits = self.model(shuf_feat, ori_edge_index) # Using original graph structure
+                tp_shuf_nids = self.shuffle_nids()
+                tp_shuf_logits = shuf_logits[tp_shuf_nids]
 
-            # Violin Loss Calculation
-            epoch_con_loss = torch.abs(ori_conf[con_nids] - aug_conf[con_nids]).sum(dim=1).mean()
-            num_unq_vls = virt_edge_index.shape[1] // 2
-            epoch_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] - aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
-            if self.info_dict['cls_mode'] == 'ori':
-                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
-                _, preds = torch.max(ori_logits[cls_nids], dim=1)
-            elif self.info_dict['cls_mode'] == 'virt':
-                epoch_cls_loss = self.crs_entropy_fn(aug_logits[cls_nids], cls_labels)
-                _, preds = torch.max(aug_logits[cls_nids], dim=1)
-            elif self.info_dict['cls_mode'] == 'both':
-                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) + self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
-                _, preds = torch.max((ori_logits + aug_logits)[cls_nids], dim=1)
-            else:
-                raise ValueError("Unexpected cls_mode parameter: {}".format(self.info_dict['cls_mode']))
+                # Violin Loss Calculation
+                epoch_con_loss = torch.abs(ori_conf[con_nids] - aug_conf[con_nids]).sum(dim=1).mean()
+                num_unq_vls = virt_edge_index.shape[1] // 2
+                epoch_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] - aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
+                if self.info_dict['cls_mode'] == 'ori':
+                    epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                    _, preds = torch.max(ori_logits[cls_nids], dim=1)
+                elif self.info_dict['cls_mode'] == 'virt':
+                    epoch_cls_loss = self.crs_entropy_fn(aug_logits[cls_nids], cls_labels)
+                    _, preds = torch.max(aug_logits[cls_nids], dim=1)
+                elif self.info_dict['cls_mode'] == 'both':
+                    epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) + self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
+                    _, preds = torch.max((ori_logits + aug_logits)[cls_nids], dim=1)
+                else:
+                    raise ValueError("Unexpected cls_mode parameter: {}".format(self.info_dict['cls_mode']))
 
-            # CoCoS Contrastive Loss Calculation
-            pos_score = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
-            epoch_ctr_loss_pos = self.bce_fn(pos_score[ctr_nids], ctr_labels_pos)
-            neg_nids = self.gen_neg_nids()
-            neg_ori_logits = ori_logits[neg_nids].detach()
-            neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
-            epoch_ctr_loss_neg = self.bce_fn(neg_score[ctr_nids], ctr_labels_neg)
-            epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
+                # CoCoS Contrastive Loss Calculation ('FS' mode)
+                # 'F' mode positive pairs
+                pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
+                pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
+                # 'S' mode positive pairs
+                pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
+                pos_loss_s = self.bce_fn(pos_score_s[ctr_nids], ctr_labels_pos)
 
-            # Combined Loss
-            epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss + self.info_dict['beta'] * epoch_ctr_loss
+                epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
 
-            self.opt.zero_grad()
-            epoch_loss.backward()
-            self.opt.step()
+                # Negative pairs
+                neg_nids = self.gen_neg_nids()
+                neg_ori_logits = ori_logits[neg_nids].detach()
+                neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
+                epoch_ctr_loss_neg = self.bce_fn(neg_score[ctr_nids], ctr_labels_neg)
 
-            epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
-            epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
-            epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
+                epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
 
-        toc = time.time()
-        if epoch_i % 10 == 0:
-            print(f"Epoch {epoch_i} | Loss: {epoch_loss.item():.4f} | Train Acc: {epoch_acc:.4f}")
-            print(f"Cls: {epoch_cls_loss.item():.4f} | Con: {epoch_con_loss.item():.4f} | VL: {epoch_vl_loss.item():.4f} | Ctr: {epoch_ctr_loss.item():.4f}")
-            print(f"Micro-F1: {epoch_micro_f1:.4f} | Macro-F1: {epoch_macro_f1:.4f}")
-            print(f"Elapse time: {toc - tic:.4f}s")
-        return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
+                # Combined Loss
+                epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss + self.info_dict['beta'] * epoch_ctr_loss
+
+                self.opt.zero_grad()
+                epoch_loss.backward()
+                self.opt.step()
+
+                epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
+                epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
+                epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
+
+            toc = time.time()
+            if epoch_i % 10 == 0:
+                print(f"Epoch {epoch_i} | Loss: {epoch_loss.item():.4f} | Train Acc: {epoch_acc:.4f}")
+                print(f"Cls: {epoch_cls_loss.item():.4f} | Con: {epoch_con_loss.item():.4f} | VL: {epoch_vl_loss.item():.4f} | Ctr: {epoch_ctr_loss.item():.4f}")
+                print(f"Micro-F1: {epoch_micro_f1:.4f} | Macro-F1: {epoch_macro_f1:.4f}")
+                print(f"Elapse time: {toc - tic:.4f}s")
+            return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
     # --- Include all helper methods from ViolinTrainer ---
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
