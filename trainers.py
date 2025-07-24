@@ -741,7 +741,7 @@ class CoCoVinTrainer(BaseTrainer):
         return pos_feat
 
     def shuffle_nids(self):
-        nid = torch.arange(self.g.num_nodes())
+        nid = torch.arange(self.g.num_nodes, device=self.info_dict['device'])
         labels = self.pred_labels
         if labels == None:
             raise ValueError('The class of unlabeled nodes have not been estimated!')
@@ -750,7 +750,7 @@ class CoCoVinTrainer(BaseTrainer):
         shuf_nid = torch.arange(self.g.num_nodes).to(self.info_dict['device'])
         for i in range(self.info_dict['out_dim']):
             # position index of the i-th class
-            i_pos = torch.where(labels == i)[0]
+            i_pos = torch.where(labels == i)[0].to(self.info_dict['device'])
             # node ids with label class i
             i_nid = nid[i_pos]
             # shuffle the i-th class node ids
