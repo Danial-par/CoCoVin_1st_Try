@@ -122,7 +122,7 @@ class BaseTrainer(object):
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
     def eval_epoch(self, epoch_i):
-        tic = time.time()
+        # tic = time.time()
         self.model.eval()
         val_labels = self.val_y.to(self.info_dict['device'])
         tt_labels = self.tt_y.to(self.info_dict['device'])
@@ -299,11 +299,17 @@ class ViolinTrainer(BaseTrainer):
             #     print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
             #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
 
-        # Plot results after training is complete
-        plot_results(self.tr_acc_history, self.val_acc_history, self.tt_acc_history, self.tr_loss_history, self.val_loss_history, self.tt_loss_history)
-        # =====================
+        # Package the history data to be returned
+        history = {
+            'tr_acc': self.tr_acc_history,
+            'val_acc': self.val_acc_history,
+            'tt_acc': self.tt_acc_history,
+            'tr_loss': self.tr_loss_history,
+            'val_loss': self.val_loss_history,
+            'tt_loss': self.tt_loss_history,
+        }
 
-        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
+        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1, history
 
     def train_epoch(self, epoch_i):
         # training sample indices and labels, for the supervised loss
@@ -546,12 +552,17 @@ class CoCoVinTrainer(BaseTrainer):
             #     print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
             #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
 
-        # Plot results after training is complete
-        plot_results(self.tr_acc_history, self.val_acc_history, self.tt_acc_history, self.tr_loss_history,
-                          self.val_loss_history, self.tt_loss_history)
-        # =====================
+        # Package the history data to be returned
+        history = {
+            'tr_acc': self.tr_acc_history,
+            'val_acc': self.val_acc_history,
+            'tt_acc': self.tt_acc_history,
+            'tr_loss': self.tr_loss_history,
+            'val_loss': self.val_loss_history,
+            'tt_loss': self.tt_loss_history,
+        }
 
-        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
+        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1, history
 
     def train_epoch(self, epoch_i):
             # Violin training setup

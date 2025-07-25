@@ -11,6 +11,16 @@ from ogb.nodeproppred import PygNodePropPredDataset
 from torch_geometric import transforms
 import numpy as np
 import time
+import pandas as pd
+
+def save_results(history, filename):
+    """
+    Saves the training, validation, and test accuracy and loss over epochs to a CSV file.
+    """
+    df = pd.DataFrame(history)
+    df.index.name = 'epoch'
+    df.to_csv(filename)
+    print(f"Results saved to {filename}")
 
 def load_data(db, db_dir='./dataset'):
     if db in ['Cora', 'CiteSeer', 'PubMed']:
@@ -32,9 +42,13 @@ def set_seed(seed):
     return
 
 def main(args):
-
     acc_list = []
     time_cost_list = []
+
+    # Create a directory for results if it doesn't exist
+    results_dir = os.path.join('exp', 'results')
+    os.makedirs(results_dir, exist_ok=True)
+
     for i in range(args.round):
         g, info_dict = load_data(args.dataset)
         set_seed(args.seed)
@@ -64,8 +78,13 @@ def main(args):
         print(model)
         print('\nSTART TRAINING\n')
         tic = time.time()
-        val_acc, tt_acc, val_acc_fin, tt_acc_fin, microf1, macrof1 = trainer.train()
+        val_acc, tt_acc, val_acc_fin, tt_acc_fin, microf1, macrof1, history = trainer.train()
         toc = time.time()
+
+        # Save the results for the current round
+        results_filename = os.path.join(results_dir, f"{args.model}_{args.dataset}_round_{i}.csv")
+        save_results(history, results_filename)
+
         acc_list.append(tt_acc)
         time_cost = toc - tic
         time_cost_list.append(time_cost)
