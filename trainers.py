@@ -71,11 +71,30 @@ class BaseTrainer(object):
         self.best_microf1 = 0
         self.best_macrof1 = 0
 
+        # Attributes for tracking training history
+        self.tr_loss_history = []
+        self.tr_acc_history = []
+        self.val_loss_history = []
+        self.val_acc_history = []
+        self.tt_loss_history = []
+        self.tt_acc_history = []
+
     def train(self):
         for i in range(self.info_dict['n_epochs']):
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
             (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
+
+            # === ADD THIS PART ===
+            # Store metrics for plotting
+            self.tr_loss_history.append(tr_loss_epoch)
+            self.tr_acc_history.append(tr_acc)
+            self.val_loss_history.append(val_loss_epoch)
+            self.val_acc_history.append(val_acc_epoch)
+            self.tt_loss_history.append(tt_loss_epoch)
+            self.tt_acc_history.append(tt_acc_epoch)
+            # =====================
+
             if val_acc_epoch > self.best_val_acc:
                 self.best_val_acc = val_acc_epoch
                 self.best_tt_acc = tt_acc_epoch
@@ -89,7 +108,18 @@ class BaseTrainer(object):
 
         # save the model in the final epoch
         _ = self.save_model(self.model, self.info_dict, state='fin')
-        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
+
+        # Package the history data to be returned
+        history = {
+            'tr_acc': self.tr_acc_history,
+            'val_acc': self.val_acc_history,
+            'tt_acc': self.tt_acc_history,
+            'tr_loss': self.tr_loss_history,
+            'val_loss': self.val_loss_history,
+            'tt_loss': self.tt_loss_history,
+        }
+
+        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1, history
 
     def train_epoch(self, epoch_i):
         # training sample indices and labels
@@ -458,8 +488,15 @@ class ViolinTrainer(BaseTrainer):
         val_correct_cumsum = val_correct_dist[::-1].cumsum()[::-1]
         val_wrong_cumsum = val_wrong_dist[::-1].cumsum()[::-1]
         val_cumsum = val_dist[::-1].cumsum()[::-1]
-        val_conf_acc = val_correct_cumsum / val_cumsum
-        val_conf_acc[np.isnan(val_conf_acc)] = 0  # zero the nan elements
+
+        # Replace the original division
+        # val_conf_acc = val_correct_cumsum / val_cumsum
+        # val_conf_acc[np.isnan(val_conf_acc)] = 0  # zero the nan elements
+
+        # With this safe division to avoid the warning
+        val_conf_acc = np.zeros_like(val_cumsum, dtype=float)
+        non_zero_mask = val_cumsum > 0
+        val_conf_acc[non_zero_mask] = val_correct_cumsum[non_zero_mask] / val_cumsum[non_zero_mask]
 
         acc_thrs = self.info_dict['delta']
         # calculate the confidence threshold: find the first qualified confidence interval index
@@ -796,8 +833,15 @@ class CoCoVinTrainer(BaseTrainer):
         val_correct_cumsum = val_correct_dist[::-1].cumsum()[::-1]
         val_wrong_cumsum = val_wrong_dist[::-1].cumsum()[::-1]
         val_cumsum = val_dist[::-1].cumsum()[::-1]
-        val_conf_acc = val_correct_cumsum / val_cumsum
-        val_conf_acc[np.isnan(val_conf_acc)] = 0  # zero the nan elements
+
+        # Replace the original division
+        # val_conf_acc = val_correct_cumsum / val_cumsum
+        # val_conf_acc[np.isnan(val_conf_acc)] = 0  # zero the nan elements
+
+        # With this safe division to avoid the warning
+        val_conf_acc = np.zeros_like(val_cumsum, dtype=float)
+        non_zero_mask = val_cumsum > 0
+        val_conf_acc[non_zero_mask] = val_correct_cumsum[non_zero_mask] / val_cumsum[non_zero_mask]
 
         acc_thrs = self.info_dict['delta']
         # calculate the confidence threshold: find the first qualified confidence interval index
