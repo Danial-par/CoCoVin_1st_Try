@@ -456,6 +456,12 @@ class CoCoVinTrainer(BaseTrainer):
                     # self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
 
+                print(f"epoch {i} - new best validation accuracy {val_acc_epoch:.4f} - test accuracy {tt_acc_epoch:.4f}")
+
+            if i % 50 == 0:
+                print(
+                    f"Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
+
             # if i % self.info_dict['eta'] == 0:
             #     print("Training acc: {:.4f}, val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
             #           .format(tr_acc, val_acc_epoch, tt_acc_epoch, tr_microf1, tr_macrof1))
@@ -541,12 +547,12 @@ class CoCoVinTrainer(BaseTrainer):
                 epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
                 epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
-            toc = time.time()
-            if epoch_i % 10 == 0:
-                print(f"Epoch {epoch_i} | Loss: {epoch_loss.item():.4f} | Train Acc: {epoch_acc:.4f}")
-                print(f"Cls: {epoch_cls_loss.item():.4f} | Con: {epoch_con_loss.item():.4f} | VL: {epoch_vl_loss.item():.4f} | Ctr: {epoch_ctr_loss.item():.4f}")
-                print(f"Micro-F1: {epoch_micro_f1:.4f} | Macro-F1: {epoch_macro_f1:.4f}")
-                print(f"Elapse time: {toc - tic:.4f}s")
+            # toc = time.time()
+            # if epoch_i % 10 == 0:
+            #     print(f"Epoch {epoch_i} | Loss: {epoch_loss.item():.4f} | Train Acc: {epoch_acc:.4f}")
+            #     print(f"Cls: {epoch_cls_loss.item():.4f} | Con: {epoch_con_loss.item():.4f} | VL: {epoch_vl_loss.item():.4f} | Ctr: {epoch_ctr_loss.item():.4f}")
+            #     print(f"Micro-F1: {epoch_micro_f1:.4f} | Macro-F1: {epoch_macro_f1:.4f}")
+            #     print(f"Elapse time: {toc - tic:.4f}s")
             return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
     # --- Include all helper methods from ViolinTrainer ---
@@ -633,12 +639,12 @@ class CoCoVinTrainer(BaseTrainer):
             tt_epoch_macro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="macro")
 
         toc = time.time()
-        if epoch_i % 10 == 0:
-            print("Epoch {} | validation loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(), val_epoch_acc))
-            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
-            print("Epoch {} | test loss: {:.4f} | testing accuracy: {:.4f}".format(epoch_i, tt_epoch_loss.cpu().item(), tt_epoch_acc))
-            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(tt_epoch_micro_f1, tt_epoch_macro_f1))
-            print('Elapse time: {:.4f}s'.format(toc - tic))
+        # if epoch_i % 10 == 0:
+        #     print("Epoch {} | validation loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(), val_epoch_acc))
+        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
+        #     print("Epoch {} | test loss: {:.4f} | testing accuracy: {:.4f}".format(epoch_i, tt_epoch_loss.cpu().item(), tt_epoch_acc))
+        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(tt_epoch_micro_f1, tt_epoch_macro_f1))
+        #     print('Elapse time: {:.4f}s'.format(toc - tic))
         return (val_epoch_loss.cpu().item(), val_epoch_acc, val_epoch_micro_f1, val_epoch_macro_f1), \
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
 
@@ -705,7 +711,7 @@ class CoCoVinTrainer(BaseTrainer):
         try:
             # set the confidence threshold based on the given accuracy requirements
             self.conf_thrs = (np.where(val_conf_acc > acc_thrs)[0][0] / 10.).item()
-            print('The (dynamic) confidence threshold is: {:.4f}'.format(self.conf_thrs))
+            # print('The (dynamic) confidence threshold is: {:.4f}'.format(self.conf_thrs))
         except IndexError:  ## no confidence interval fulfills the accuracy requirement
             # find the confidence interval that with the highest acc
             self.conf_thrs = (np.argmax(val_conf_acc) / 10.).item()
