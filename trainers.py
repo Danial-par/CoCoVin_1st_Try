@@ -13,7 +13,7 @@ def plot_results(tr_acc_history, val_acc_history, tt_acc_history, tr_loss_histor
     """
     Plots the training, validation, and test accuracy and loss over epochs.
     """
-    epochs = range(1, len(self.tr_acc_history) + 1)
+    epochs = range(1, len(tr_acc_history) + 1)
 
     # Plotting Accuracy
     plt.figure(figsize=(12, 5))
@@ -528,7 +528,7 @@ class CoCoVinTrainer(BaseTrainer):
                 self.best_tt_acc = tt_acc_epoch
                 self.best_microf1 = tt_microf1_epoch
                 self.best_macrof1 = tt_macrof1_epoch
-                # save_model_dir = utils.save_model(self.model, self.info_dict)
+                save_model_dir = self.save_model(self.model, self.info_dict)
                 if val_acc_epoch > self.best_pretr_val_acc:
                     self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
@@ -720,7 +720,7 @@ class CoCoVinTrainer(BaseTrainer):
             tt_epoch_micro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="micro")
             tt_epoch_macro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="macro")
 
-        # toc = time.time()
+        toc = time.time()
         # if epoch_i % 10 == 0:
         #     print("Epoch {} | validation loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(), val_epoch_acc))
         #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
