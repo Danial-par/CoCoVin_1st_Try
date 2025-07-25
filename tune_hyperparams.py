@@ -43,6 +43,9 @@ def run_experiment(params):
                     val_acc_str = parts[7]
                     test_acc_str = parts[11]
                     # Keep updating to get the final best accuracy
+                    print(line)
+                    print(val_acc_str)
+                    print(parts)
                     best_val_acc = float(val_acc_str)
                     best_test_acc = float(test_acc_str)
                 except (ValueError, IndexError):
