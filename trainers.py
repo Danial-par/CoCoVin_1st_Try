@@ -241,10 +241,14 @@ class ViolinTrainer(BaseTrainer):
                     # generate estimated labels in the following epochs
                     self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
+                    print(f"epoch {i:03d} | new best validation accuracy {self.best_val_acc:.4f} - test accuracy {self.best_tt_acc:.4f}")
 
-            if i % self.info_dict['eta'] == 0:
-                print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
-                      .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
+            if i % 50 == 0:
+                print(
+                    f"Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
+            # if i % self.info_dict['eta'] == 0:
+            #     print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
+            #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
 
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
@@ -300,12 +304,12 @@ class ViolinTrainer(BaseTrainer):
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
             epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
-        toc = time.time()
-        if epoch_i % 10 == 0:
-            print("Epoch {} | Loss: {:.4f} | training accuracy: {:.4f}".format(epoch_i, epoch_loss.cpu().item(), epoch_acc))
-            print("cls loss: {:.4f} | consistent loss: {:.4f} | vl loss: {:.4f} ".format(epoch_cls_loss.cpu().item(), epoch_con_loss.cpu().item(), epoch_vl_loss.cpu().item()))
-            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(epoch_micro_f1, epoch_macro_f1))
-            print('Elapse time: {:.4f}s'.format(toc - tic))
+        # toc = time.time()
+        # if epoch_i % 10 == 0:
+        #     print("Epoch {} | Loss: {:.4f} | training accuracy: {:.4f}".format(epoch_i, epoch_loss.cpu().item(), epoch_acc))
+        #     print("cls loss: {:.4f} | consistent loss: {:.4f} | vl loss: {:.4f} ".format(epoch_cls_loss.cpu().item(), epoch_con_loss.cpu().item(), epoch_vl_loss.cpu().item()))
+        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(epoch_micro_f1, epoch_macro_f1))
+        #     print('Elapse time: {:.4f}s'.format(toc - tic))
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
     def eval_epoch(self, epoch_i):
@@ -330,13 +334,13 @@ class ViolinTrainer(BaseTrainer):
             tt_epoch_micro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="micro")
             tt_epoch_macro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="macro")
 
-        toc = time.time()
-        if epoch_i % 10 == 0:
-            print("Epoch {} | validation loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(), val_epoch_acc))
-            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
-            print("Epoch {} | test loss: {:.4f} | testing accuracy: {:.4f}".format(epoch_i, tt_epoch_loss.cpu().item(), tt_epoch_acc))
-            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(tt_epoch_micro_f1, tt_epoch_macro_f1))
-            print('Elapse time: {:.4f}s'.format(toc - tic))
+        # toc = time.time()
+        # if epoch_i % 10 == 0:
+        #     print("Epoch {} | validation loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(), val_epoch_acc))
+        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
+        #     print("Epoch {} | test loss: {:.4f} | testing accuracy: {:.4f}".format(epoch_i, tt_epoch_loss.cpu().item(), tt_epoch_acc))
+        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(tt_epoch_micro_f1, tt_epoch_macro_f1))
+        #     print('Elapse time: {:.4f}s'.format(toc - tic))
         return (val_epoch_loss.cpu().item(), val_epoch_acc, val_epoch_micro_f1, val_epoch_macro_f1), \
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
 
@@ -403,7 +407,7 @@ class ViolinTrainer(BaseTrainer):
         try:
             # set the confidence threshold based on the given accuracy requirements
             self.conf_thrs = (np.where(val_conf_acc > acc_thrs)[0][0] / 10.).item()
-            print('The (dynamic) confidence threshold is: {:.4f}'.format(self.conf_thrs))
+            # print('The (dynamic) confidence threshold is: {:.4f}'.format(self.conf_thrs))
         except IndexError:  ## no confidence interval fulfills the accuracy requirement
             # find the confidence interval that with the highest acc
             self.conf_thrs = (np.argmax(val_conf_acc) / 10.).item()
@@ -456,7 +460,7 @@ class CoCoVinTrainer(BaseTrainer):
                     # self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
 
-                print(f"epoch {i} - new best validation accuracy {val_acc_epoch:.4f} - test accuracy {tt_acc_epoch:.4f}")
+                print(f"epoch {i:03d} | new best validation accuracy {self.best_val_acc:.4f} - test accuracy {self.best_tt_acc:.4f}")
 
             if i % 50 == 0:
                 print(
@@ -638,7 +642,7 @@ class CoCoVinTrainer(BaseTrainer):
             tt_epoch_micro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="micro")
             tt_epoch_macro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="macro")
 
-        toc = time.time()
+        # toc = time.time()
         # if epoch_i % 10 == 0:
         #     print("Epoch {} | validation loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(), val_epoch_acc))
         #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
