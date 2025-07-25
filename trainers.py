@@ -6,7 +6,38 @@ import time
 from copy import deepcopy
 from sklearn import metrics
 import torch_geometric as pyg
+import matplotlib.pyplot as plt
 
+
+def plot_results(tr_acc_history, val_acc_history, tt_acc_history, tr_loss_history, val_loss_history, tt_loss_history):
+    """
+    Plots the training, validation, and test accuracy and loss over epochs.
+    """
+    epochs = range(1, len(self.tr_acc_history) + 1)
+
+    # Plotting Accuracy
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, tr_acc_history, 'b', label='Training Acc')
+    plt.plot(epochs, val_acc_history, 'g', label='Validation Acc')
+    plt.plot(epochs, tt_acc_history, 'r', label='Test Acc')
+    plt.title('Accuracy over Epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    # Plotting Loss
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, tr_loss_history, 'b', label='Training Loss')
+    plt.plot(epochs, val_loss_history, 'g', label='Validation Loss')
+    plt.plot(epochs, tt_loss_history, 'r', label='Test Loss')
+    plt.title('Loss over Epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
 
 class BaseTrainer(object):
     '''
@@ -52,7 +83,7 @@ class BaseTrainer(object):
                 self.best_macrof1 = tt_macrof1_epoch
                 _ = self.save_model(self.model, self.info_dict)
 
-            if i % 10 == 0:
+            if i % 100 == 0:
                 print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
                       .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
 
@@ -84,10 +115,10 @@ class BaseTrainer(object):
             epoch_macro_f1 = metrics.f1_score(labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
         toc = time.time()
-        if epoch_i % 10 == 0:
-            print("Epoch {} | Loss: {:.4f} | training accuracy: {:.4f}".format(epoch_i, epoch_loss.cpu().item(), epoch_acc))
-            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(epoch_micro_f1, epoch_macro_f1))
-            print('Elapse time: {:.4f}s'.format(toc - tic))
+        # if epoch_i % 10 == 0:
+        #     print("Epoch {} | Loss: {:.4f} | training accuracy: {:.4f}".format(epoch_i, epoch_loss.cpu().item(), epoch_acc))
+        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(epoch_micro_f1, epoch_macro_f1))
+        #     print('Elapse time: {:.4f}s'.format(toc - tic))
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
     def eval_epoch(self, epoch_i):
@@ -112,15 +143,15 @@ class BaseTrainer(object):
             tt_epoch_micro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="micro")
             tt_epoch_macro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="macro")
 
-        toc = time.time()
-        if epoch_i % 10 == 0:
-            print("Epoch {} | Loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(),
-                                                                                 val_epoch_acc))
-            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
-            print("Epoch {} | Loss: {:.4f} | testing accuracy: {:.4f}".format(epoch_i, tt_epoch_loss.cpu().item(),
-                                                                                 tt_epoch_acc))
-            print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(tt_epoch_micro_f1, tt_epoch_macro_f1))
-            print('Elapse time: {:.4f}s'.format(toc - tic))
+        # toc = time.time()
+        # if epoch_i % 10 == 0:
+        #     print("Epoch {} | Loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(),
+        #                                                                          val_epoch_acc))
+        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
+        #     print("Epoch {} | Loss: {:.4f} | testing accuracy: {:.4f}".format(epoch_i, tt_epoch_loss.cpu().item(),
+        #                                                                          tt_epoch_acc))
+        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(tt_epoch_micro_f1, tt_epoch_macro_f1))
+        #     print('Elapse time: {:.4f}s'.format(toc - tic))
         return (val_epoch_loss.cpu().item(), val_epoch_acc, val_epoch_micro_f1, val_epoch_macro_f1), \
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
 
@@ -230,12 +261,22 @@ class ViolinTrainer(BaseTrainer):
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
             (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
+
+            # Store metrics for plotting
+            self.tr_loss_history.append(tr_loss_epoch)
+            self.tr_acc_history.append(tr_acc)
+            self.val_loss_history.append(val_loss_epoch)
+            self.val_acc_history.append(val_acc_epoch)
+            self.tt_loss_history.append(tt_loss_epoch)
+            self.tt_acc_history.append(tt_acc_epoch)
+            # =====================
+
             if val_acc_epoch > self.best_val_acc:
                 self.best_val_acc = val_acc_epoch
                 self.best_tt_acc = tt_acc_epoch
                 self.best_microf1 = tt_microf1_epoch
                 self.best_macrof1 = tt_macrof1_epoch
-                save_model_dir = self.save_model(self.model, self.info_dict)
+                # save_model_dir = self.save_model(self.model, self.info_dict)
                 if val_acc_epoch > self.best_pretr_val_acc:
                     # update the pretraining model's parameter directory, we will use the updated pretraining model to
                     # generate estimated labels in the following epochs
@@ -249,6 +290,10 @@ class ViolinTrainer(BaseTrainer):
             # if i % self.info_dict['eta'] == 0:
             #     print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
             #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
+
+        # Plot results after training is complete
+        self.plot_results(self.tr_acc_history, self.val_acc_history, self.tt_acc_history, self.tr_loss_history, self.val_loss_history, self.tt_loss_history)
+        # =====================
 
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
@@ -416,6 +461,7 @@ class ViolinTrainer(BaseTrainer):
         return
 
 
+
 class CoCoVinTrainer(BaseTrainer):
     def __init__(self, g, model, info_dict, *args, **kwargs):
         super().__init__(g, model, info_dict, *args, **kwargs)
@@ -450,6 +496,17 @@ class CoCoVinTrainer(BaseTrainer):
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
             (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
+
+            # === ADD THIS PART ===
+            # Store metrics for plotting
+            self.tr_loss_history.append(tr_loss_epoch)
+            self.tr_acc_history.append(tr_acc)
+            self.val_loss_history.append(val_loss_epoch)
+            self.val_acc_history.append(val_acc_epoch)
+            self.tt_loss_history.append(tt_loss_epoch)
+            self.tt_acc_history.append(tt_acc_epoch)
+            # =====================
+
             if val_acc_epoch > self.best_val_acc:
                 self.best_val_acc = val_acc_epoch
                 self.best_tt_acc = tt_acc_epoch
@@ -472,6 +529,11 @@ class CoCoVinTrainer(BaseTrainer):
             #     print("___________________________________________________________________________________")
             #     print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
             #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
+
+        # Plot results after training is complete
+        self.plot_results(self.tr_acc_history, self.val_acc_history, self.tt_acc_history, self.tr_loss_history,
+                          self.val_loss_history, self.tt_loss_history)
+        # =====================
 
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
