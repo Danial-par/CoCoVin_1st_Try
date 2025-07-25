@@ -185,6 +185,14 @@ class ViolinTrainer(BaseTrainer):
         self.load_pretr_model()
         self.pred_label_flag = True  # a flag to indicate whether it needs to predict labels for the next epoch
 
+        # Attributes for tracking training history
+        self.tr_loss_history = []
+        self.tr_acc_history = []
+        self.val_loss_history = []
+        self.val_acc_history = []
+        self.tt_loss_history = []
+        self.tt_acc_history = []
+
     def load_pretr_model(self):
         # load learnable weights from the pretrained model
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -276,7 +284,7 @@ class ViolinTrainer(BaseTrainer):
                 self.best_tt_acc = tt_acc_epoch
                 self.best_microf1 = tt_microf1_epoch
                 self.best_macrof1 = tt_macrof1_epoch
-                # save_model_dir = self.save_model(self.model, self.info_dict)
+                save_model_dir = self.save_model(self.model, self.info_dict)
                 if val_acc_epoch > self.best_pretr_val_acc:
                     # update the pretraining model's parameter directory, we will use the updated pretraining model to
                     # generate estimated labels in the following epochs
@@ -292,7 +300,7 @@ class ViolinTrainer(BaseTrainer):
             #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
 
         # Plot results after training is complete
-        self.plot_results(self.tr_acc_history, self.val_acc_history, self.tt_acc_history, self.tr_loss_history, self.val_loss_history, self.tt_loss_history)
+        plot_results(self.tr_acc_history, self.val_acc_history, self.tt_acc_history, self.tr_loss_history, self.val_loss_history, self.tt_loss_history)
         # =====================
 
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
@@ -483,6 +491,14 @@ class CoCoVinTrainer(BaseTrainer):
                                      {'params': self.Dis.parameters()}],
                                     lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
 
+        # Attributes for tracking training history
+        self.tr_loss_history = []
+        self.tr_acc_history = []
+        self.val_loss_history = []
+        self.val_acc_history = []
+        self.tt_loss_history = []
+        self.tt_acc_history = []
+
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
 
@@ -514,7 +530,7 @@ class CoCoVinTrainer(BaseTrainer):
                 self.best_macrof1 = tt_macrof1_epoch
                 # save_model_dir = utils.save_model(self.model, self.info_dict)
                 if val_acc_epoch > self.best_pretr_val_acc:
-                    # self.pretr_model_dir = save_model_dir
+                    self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
 
                 print(f"epoch {i:03d} | new best validation accuracy {self.best_val_acc:.4f} - test accuracy {self.best_tt_acc:.4f}")
@@ -531,7 +547,7 @@ class CoCoVinTrainer(BaseTrainer):
             #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
 
         # Plot results after training is complete
-        self.plot_results(self.tr_acc_history, self.val_acc_history, self.tt_acc_history, self.tr_loss_history,
+        plot_results(self.tr_acc_history, self.val_acc_history, self.tt_acc_history, self.tr_loss_history,
                           self.val_loss_history, self.tt_loss_history)
         # =====================
 
