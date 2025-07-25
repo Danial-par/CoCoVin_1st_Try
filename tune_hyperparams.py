@@ -38,8 +38,9 @@ def run_experiment(params):
         if 'new best validation accuracy' in line:
             parts = line.split()
             # Example line: epoch 035 | new best validation accuracy 0.8140 - test accuracy 0.8050
-            val_acc_str = parts[6]
-            test_acc_str = parts[9]
+            # Corrected indices from 6 and 9 to 7 and 11
+            val_acc_str = parts[7]
+            test_acc_str = parts[11]
             # Keep updating to get the final best accuracy
             best_val_acc = float(val_acc_str)
             best_test_acc = float(test_acc_str)
