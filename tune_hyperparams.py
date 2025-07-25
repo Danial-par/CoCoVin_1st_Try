@@ -23,7 +23,7 @@ def run_experiment(params):
     print(f"Running command: {' '.join(command)}")
 
     # Execute the command
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
 
     # Check for errors
     if result.returncode != 0:
@@ -38,12 +38,16 @@ def run_experiment(params):
         if 'new best validation accuracy' in line:
             parts = line.split()
             # Example line: epoch 035 | new best validation accuracy 0.8140 - test accuracy 0.8050
-            # Corrected indices from 6 and 9 to 7 and 11
-            val_acc_str = parts[7]
-            test_acc_str = parts[11]
-            # Keep updating to get the final best accuracy
-            best_val_acc = float(val_acc_str)
-            best_test_acc = float(test_acc_str)
+            if len(parts) > 11:
+                try:
+                    val_acc_str = parts[7]
+                    test_acc_str = parts[11]
+                    # Keep updating to get the final best accuracy
+                    best_val_acc = float(val_acc_str)
+                    best_test_acc = float(test_acc_str)
+                except (ValueError, IndexError):
+                    # This line matched but didn't have the expected format, so we skip it.
+                    continue
 
     return best_val_acc, best_test_acc
 
@@ -78,18 +82,22 @@ def main():
             })
             print(f"Result: Val Acc = {val_acc:.4f}, Test Acc = {test_acc:.4f}")
         else:
-            print("Experiment failed.")
+            print("Experiment failed or did not produce a valid accuracy.")
 
     # Save results to a CSV file
-    results_df = pd.DataFrame(results)
-    results_df = results_df.sort_values(by='val_acc', ascending=False)
-    results_filename = 'tuning_results_cocovin.csv'
-    results_df.to_csv(results_filename, index=False)
+    if results:
+        results_df = pd.DataFrame(results)
+        results_df = results_df.sort_values(by='val_acc', ascending=False)
+        results_filename = 'tuning_results_cocovin.csv'
+        results_df.to_csv(results_filename, index=False)
 
-    print("\n--- Tuning Complete ---")
-    print(f"Results saved to '{results_filename}'")
-    print("Top 5 hyperparameter combinations:")
-    print(results_df.head(5))
+        print("\n--- Tuning Complete ---")
+        print(f"Results saved to '{results_filename}'")
+        print("Top 5 hyperparameter combinations:")
+        print(results_df.head(5))
+    else:
+        print("\n--- Tuning Complete ---")
+        print("No successful experiments were completed.")
 
 
 if __name__ == '__main__':

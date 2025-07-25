@@ -6,38 +6,6 @@ import time
 from copy import deepcopy
 from sklearn import metrics
 import torch_geometric as pyg
-import matplotlib.pyplot as plt
-
-
-def plot_results(tr_acc_history, val_acc_history, tt_acc_history, tr_loss_history, val_loss_history, tt_loss_history):
-    """
-    Plots the training, validation, and test accuracy and loss over epochs.
-    """
-    epochs = range(1, len(tr_acc_history) + 1)
-
-    # Plotting Accuracy
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(epochs, tr_acc_history, 'b', label='Training Acc')
-    plt.plot(epochs, val_acc_history, 'g', label='Validation Acc')
-    plt.plot(epochs, tt_acc_history, 'r', label='Test Acc')
-    plt.title('Accuracy over Epochs')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.legend()
-
-    # Plotting Loss
-    plt.subplot(1, 2, 2)
-    plt.plot(epochs, tr_loss_history, 'b', label='Training Loss')
-    plt.plot(epochs, val_loss_history, 'g', label='Validation Loss')
-    plt.plot(epochs, tt_loss_history, 'r', label='Test Loss')
-    plt.title('Loss over Epochs')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-
-    plt.tight_layout()
-    plt.show()
 
 class BaseTrainer(object):
     '''
