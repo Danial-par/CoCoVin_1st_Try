@@ -511,6 +511,9 @@ class CoCoVinTrainer(BaseTrainer):
         self.tt_loss_history = []
         self.tt_acc_history = []
 
+    def load_pretr_model(self):
+        self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
+
     def compute_log_ratio_loss(self, ori_logits, shuf_logits, tp_shuf_logits, ctr_nids):
         """
         Compute Log-Ratio Loss for contrastive learning
