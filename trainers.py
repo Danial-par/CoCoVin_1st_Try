@@ -636,7 +636,9 @@ class CoCoVinTrainer(BaseTrainer):
                 epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
 
                 # Combined Loss
-                epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss + self.info_dict['beta'] * epoch_ctr_loss
+                # Dynamic beta based on epoch number
+                current_beta = self.info_dict['beta'] * min(0.6, epoch_i / 500)  # Ramp up over 500 epochs
+                epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss + current_beta * epoch_ctr_loss
 
                 self.opt.zero_grad()
                 epoch_loss.backward()
