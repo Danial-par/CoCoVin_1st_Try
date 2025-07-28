@@ -643,14 +643,8 @@ class CoCoVinTrainer(BaseTrainer):
                 total_cocos_loss = (cocos_cls_loss + 0.6 * epoch_ctr_loss)
 
                 # Combined Loss
-                # epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss
-                # + self.info_dict['gamma'] * epoch_vl_loss + self.info_dict['beta'] * total_cocos_loss
-
-                # First half epochs train with Violin loss only, second half epochs train with CoCoS loss only
-                if epoch_i < self.info_dict['n_epochs'] // 2:
-                    epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss
-                else:
-                    epoch_loss = total_cocos_loss
+                epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss
+                + self.info_dict['gamma'] * epoch_vl_loss + self.info_dict['beta'] * total_cocos_loss
 
                 self.opt.zero_grad()
                 epoch_loss.backward()
