@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from torch import nn
+import torch.nn.functional as F
 import os
 import time
 from copy import deepcopy
@@ -581,7 +582,7 @@ class CoCoVinTrainer(BaseTrainer):
 
             tic = time.time()
             self.model.train()
-            self.Dis.train()
+            # self.Dis.train()
             with (torch.set_grad_enabled(True)):
                 # Violin forward passes
                 x_data = self.g.x.to(self.info_dict['device'])
