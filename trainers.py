@@ -597,7 +597,6 @@ class CoCoVinTrainer(BaseTrainer):
                 # CoCoS forward passes
                 shuf_feat = self.shuffle_feat(x_data)
                 shuf_logits = self.model(shuf_feat, ori_edge_index)
-                aug_shuf_logits = self.model(shuf_feat, aug_edge_index) # Augmented shuffled logits added
                 tp_shuf_nids = self.shuffle_nids()
                 tp_shuf_logits = shuf_logits[tp_shuf_nids]
 
@@ -619,10 +618,10 @@ class CoCoVinTrainer(BaseTrainer):
 
                 # CoCoS Contrastive Loss Calculation ('FS' mode)
                 # 'F' mode positive pairs
-                pos_score_f = self.Dis(torch.cat((aug_shuf_logits, ori_logits), dim=-1)) # Use augmented shuffled logits
+                pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
                 pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
                 # 'S' mode positive pairs
-                pos_score_s = self.Dis(torch.cat((tp_shuf_logits, aug_shuf_logits), dim=-1))
+                pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
                 pos_loss_s = self.bce_fn(pos_score_s[ctr_nids], ctr_labels_pos)
 
                 epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
@@ -635,10 +634,17 @@ class CoCoVinTrainer(BaseTrainer):
 
                 epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
 
+                # CoCoS Classification Loss
+                cocos_cls_loss_ori = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                cocos_cls_loss_shuf = self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
+                cocos_cls_loss = (cocos_cls_loss_ori + cocos_cls_loss_shuf) / 2.0
+
+                # Enhanced CoCoS Loss (contrastive + classification)
+                enhanced_cocos_loss = (epoch_ctr_loss + 0.6 * cocos_cls_loss)
+
                 # Combined Loss
-                # Dynamic beta based on epoch number
-                current_beta = self.info_dict['beta'] * min(0.6, epoch_i / 500)  # Ramp up over 500 epochs
-                epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss + current_beta * epoch_ctr_loss
+                epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict[
+                    'gamma'] * epoch_vl_loss + self.info_dict['beta'] * enhanced_cocos_loss
 
                 self.opt.zero_grad()
                 epoch_loss.backward()
