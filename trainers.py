@@ -639,16 +639,12 @@ class CoCoVinTrainer(BaseTrainer):
                 cocos_cls_loss_shuf = self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
                 cocos_cls_loss = (cocos_cls_loss_ori + cocos_cls_loss_shuf) / 2.0
 
-                # Enhanced CoCoS Loss (contrastive + classification)
-                enhanced_cocos_loss = (epoch_ctr_loss + 0.6 * cocos_cls_loss)
-
-                # dynamic loss weighting
-                # over time, second term becomes more important
-                coef = epoch_i / self.info_dict['n_epochs']
+                # CoCoS Loss (contrastive + classification)
+                total_cocos_loss = (cocos_cls_loss + 0.6 * epoch_ctr_loss)
 
                 # Combined Loss
-                epoch_loss = (1 - coef) * (epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss)
-                + coef * enhanced_cocos_loss
+                epoch_loss = (epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss
+                + self.info_dict['gamma'] * epoch_vl_loss + self.info_dict['beta'] * total_cocos_loss) / 2.0
 
                 self.opt.zero_grad()
                 epoch_loss.backward()
