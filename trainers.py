@@ -597,6 +597,7 @@ class CoCoVinTrainer(BaseTrainer):
                 # CoCoS forward passes
                 shuf_feat = self.shuffle_feat(x_data)
                 shuf_logits = self.model(shuf_feat, ori_edge_index)
+                aug_shuf_logits = self.model(shuf_feat, aug_edge_index) # Augmented shuffled logits added
                 tp_shuf_nids = self.shuffle_nids()
                 tp_shuf_logits = shuf_logits[tp_shuf_nids]
 
@@ -618,10 +619,10 @@ class CoCoVinTrainer(BaseTrainer):
 
                 # CoCoS Contrastive Loss Calculation ('FS' mode)
                 # 'F' mode positive pairs
-                pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
+                pos_score_f = self.Dis(torch.cat((aug_shuf_logits, ori_logits), dim=-1)) # Use augmented shuffled logits
                 pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
                 # 'S' mode positive pairs
-                pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
+                pos_score_s = self.Dis(torch.cat((tp_shuf_logits, aug_shuf_logits), dim=-1))
                 pos_loss_s = self.bce_fn(pos_score_s[ctr_nids], ctr_labels_pos)
 
                 epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
