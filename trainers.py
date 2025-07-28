@@ -652,8 +652,8 @@ class CoCoVinTrainer(BaseTrainer):
                 epoch_ctr_loss = (torch.log(pos_dist + epsilon) - torch.log(neg_dist + epsilon)).mean()
 
                 # Combined Loss
-                epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss
-                + self.info_dict['gamma'] * epoch_vl_loss + self.info_dict['beta'] * epoch_ctr_loss
+                epoch_loss = (epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss
+                + self.info_dict['gamma'] * epoch_vl_loss + self.info_dict['beta'] * epoch_ctr_loss) / (1.0 + self.info_dict['beta'])
 
                 self.opt.zero_grad()
                 epoch_loss.backward()
