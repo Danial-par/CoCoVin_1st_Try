@@ -255,7 +255,6 @@ class ViolinTrainer(BaseTrainer):
         self.virt_edge_index = full_virt_edges
 
     def train(self):
-
         for i in range(self.info_dict['n_epochs']):
             if i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
@@ -275,7 +274,6 @@ class ViolinTrainer(BaseTrainer):
             self.val_acc_history.append(val_acc_epoch)
             self.tt_loss_history.append(tt_loss_epoch)
             self.tt_acc_history.append(tt_acc_epoch)
-            # =====================
 
             if val_acc_epoch > self.best_val_acc:
                 self.best_val_acc = val_acc_epoch
@@ -284,18 +282,13 @@ class ViolinTrainer(BaseTrainer):
                 self.best_macrof1 = tt_macrof1_epoch
                 save_model_dir = self.save_model(self.model, self.info_dict)
                 if val_acc_epoch > self.best_pretr_val_acc:
-                    # update the pretraining model's parameter directory, we will use the updated pretraining model to
-                    # generate estimated labels in the following epochs
+                    # update the pretraining model's parameter directory
                     self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
                     print(f"epoch {i:03d} | new best validation accuracy {self.best_val_acc:.4f} - test accuracy {self.best_tt_acc:.4f}")
 
             if i % 50 == 0:
-                print(
-                    f"Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
-            # if i % self.info_dict['eta'] == 0:
-            #     print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
-            #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
+                print(f"Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
 
         # Package the history data to be returned
         history = {
