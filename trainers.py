@@ -644,7 +644,7 @@ class CoCoVinTrainer(BaseTrainer):
 
                 # Negative Pairs Distance
                 neg_nids = self.gen_neg_nids()
-                neg_ori_logits = ori_logits[neg_nids].detach()
+                neg_ori_logits = ori_logits[neg_nids]
                 neg_dist = F.pairwise_distance(ori_logits[ctr_nids], neg_ori_logits[ctr_nids], p=2)
 
                 # Loss = -log(similarity) which is roughly log(distance)
