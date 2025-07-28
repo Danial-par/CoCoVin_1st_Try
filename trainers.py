@@ -583,7 +583,7 @@ class CoCoVinTrainer(BaseTrainer):
             tic = time.time()
             self.model.train()
             self.Dis.train()
-            with torch.set_grad_enabled(True):
+            with (torch.set_grad_enabled(True)):
                 # Violin forward passes
                 x_data = self.g.x.to(self.info_dict['device'])
                 ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
@@ -642,9 +642,13 @@ class CoCoVinTrainer(BaseTrainer):
                 # Enhanced CoCoS Loss (contrastive + classification)
                 enhanced_cocos_loss = (epoch_ctr_loss + 0.6 * cocos_cls_loss)
 
+                # dynamic loss weighting
+                # over time, second term becomes more important
+                coef = epoch_i / self.info_dict['n_epochs']
+
                 # Combined Loss
-                epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict[
-                    'gamma'] * epoch_vl_loss + self.info_dict['beta'] * enhanced_cocos_loss
+                epoch_loss = (1 - coef) * (epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss)
+                + coef * enhanced_cocos_loss
 
                 self.opt.zero_grad()
                 epoch_loss.backward()
