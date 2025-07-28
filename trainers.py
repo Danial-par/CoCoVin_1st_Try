@@ -596,7 +596,7 @@ class CoCoVinTrainer(BaseTrainer):
 
                 # CoCoS forward passes
                 shuf_feat = self.shuffle_feat(x_data)
-                shuf_logits = self.model(shuf_feat, aug_edge_index) # Using the augmented graph structure
+                shuf_logits = self.model(shuf_feat, ori_edge_index)
                 tp_shuf_nids = self.shuffle_nids()
                 tp_shuf_logits = shuf_logits[tp_shuf_nids]
 
