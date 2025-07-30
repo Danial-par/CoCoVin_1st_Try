@@ -535,7 +535,7 @@ class CoCoVinTrainer(BaseTrainer):
         self.tt_acc_history = []
 
         # Add phase tracking for sequential training
-        self.phase1_epochs = self.info_dict['n_epochs'] // 3  # First 1/3 for CoCoS only
+        self.phase1_epochs = self.info_dict['n_epochs'] // 3  # First 1/3 for Violin only
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -597,10 +597,12 @@ class CoCoVinTrainer(BaseTrainer):
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1, history
 
     def train_epoch(self, epoch_i):
-        if epoch_i % 4 < 2:  # Epochs 0,1,4,5,8,9...
-            return self.train_epoch_cocos_only(epoch_i)
-        else:  # Epochs 2,3,6,7,10,11...
+        # First 1/3 of epochs: Violin only
+        # Remaining 2/3 of epochs: CoCoS only
+        if epoch_i < self.phase1_epochs:
             return self.train_epoch_violin_only(epoch_i)
+        else:
+            return self.train_epoch_cocos_only(epoch_i)
 
     def train_epoch_cocos_only(self, epoch_i):
         # Use clean labels for CoCoS
