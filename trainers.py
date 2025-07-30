@@ -518,7 +518,7 @@ class CoCoVinTrainer(BaseTrainer):
 
     def train(self):
         for i in range(self.info_dict['n_epochs']):
-            if i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
+            if i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
                     self.get_pred_labels()
                 self.add_VOs()
@@ -573,13 +573,9 @@ class CoCoVinTrainer(BaseTrainer):
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1, history
 
     def train_epoch(self, epoch_i):
-        if epoch_i < self.phase1_epochs:
-            # Phase 1: CoCoS only - but we need predicted labels first
-            if self.pred_labels is None:
-                self.get_pred_labels()  # Get initial predictions for CoCoS
+        if epoch_i % 4 < 2:  # Epochs 0,1,4,5,8,9...
             return self.train_epoch_cocos_only(epoch_i)
-        else:
-            # Phase 2: Violin only
+        else:  # Epochs 2,3,6,7,10,11...
             return self.train_epoch_violin_only(epoch_i)
 
     def train_epoch_cocos_only(self, epoch_i):
