@@ -401,6 +401,31 @@ class ViolinTrainer(BaseTrainer):
         return (val_epoch_loss.cpu().item(), val_epoch_acc, val_epoch_micro_f1, val_epoch_macro_f1), \
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
 
+    def add_label_noise(self, pred_labels, pred_conf, noise_ratio=0.1):
+        """Add noise to predicted labels to prevent overfitting"""
+        num_nodes = len(pred_labels)
+        noise_mask = torch.rand(num_nodes, device=self.info_dict['device']) < noise_ratio
+
+        # Only apply noise to non-training nodes (we don't want to corrupt ground truth)
+        non_training_mask = ~self.tr_mask
+        final_noise_mask = noise_mask & non_training_mask
+
+        if final_noise_mask.sum() > 0:
+            with torch.no_grad():
+                x_data = self.g.x.to(self.info_dict['device'])
+                edge_index = self.ori_edge_index.to(self.info_dict['device'])
+                logits = self.model(x_data, edge_index)
+                prob = torch.softmax(logits, dim=1)
+
+                # Get second-most likely class for each node
+                _, top_indices = torch.topk(prob, k=2, dim=1)
+                second_best = top_indices[:, 1]
+
+                # Apply label noise: use second-most likely class
+                pred_labels[final_noise_mask] = second_best[final_noise_mask]
+
+        return pred_labels
+
     def get_pred_labels(self):
 
         # load the pretrained model and use it to estimate the labels
@@ -419,6 +444,9 @@ class ViolinTrainer(BaseTrainer):
             # for training nodes, the estimated labels will be replaced by their ground-truth labels
             self.pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
             self.pred_conf = conf
+
+            # Add label noise to predicted labels
+            self.pred_labels = self.add_label_noise(self.pred_labels, self.pred_conf, noise_ratio=0.1)
 
             pretr_val_acc = torch.sum(preds[self.val_nid].cpu() == self.labels[self.val_nid]).item() * 1.0 / \
                             self.labels[self.val_nid].shape[0]
@@ -676,6 +704,31 @@ class CoCoVinTrainer(BaseTrainer):
 
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
+    def add_label_noise(self, pred_labels, pred_conf, noise_ratio=0.1):
+        """Add noise to predicted labels to prevent overfitting"""
+        num_nodes = len(pred_labels)
+        noise_mask = torch.rand(num_nodes, device=self.info_dict['device']) < noise_ratio
+
+        # Only apply noise to non-training nodes (we don't want to corrupt ground truth)
+        non_training_mask = ~self.tr_mask
+        final_noise_mask = noise_mask & non_training_mask
+
+        if final_noise_mask.sum() > 0:
+            with torch.no_grad():
+                x_data = self.g.x.to(self.info_dict['device'])
+                edge_index = self.ori_edge_index.to(self.info_dict['device'])
+                logits = self.model(x_data, edge_index)
+                prob = torch.softmax(logits, dim=1)
+
+                # Get second-most likely class for each node
+                _, top_indices = torch.topk(prob, k=2, dim=1)
+                second_best = top_indices[:, 1]
+
+                # Apply label noise: use second-most likely class
+                pred_labels[final_noise_mask] = second_best[final_noise_mask]
+
+        return pred_labels
+
     # --- Include all helper methods from ViolinTrainer ---
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
     def add_VOs(self):
@@ -787,6 +840,9 @@ class CoCoVinTrainer(BaseTrainer):
             # for training nodes, the estimated labels will be replaced by their ground-truth labels
             self.pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
             self.pred_conf = conf
+
+            # Add label noise to predicted labels
+            self.pred_labels = self.add_label_noise(self.pred_labels, self.pred_conf, noise_ratio=0.1)
 
             pretr_val_acc = torch.sum(preds[self.val_nid].cpu() == self.labels[self.val_nid]).item() * 1.0 / \
                             self.labels[self.val_nid].shape[0]
