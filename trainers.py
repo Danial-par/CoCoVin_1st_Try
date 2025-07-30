@@ -406,13 +406,7 @@ class ViolinTrainer(BaseTrainer):
         num_nodes = len(pred_labels)
         noise_mask = torch.rand(num_nodes, device=self.info_dict['device']) < noise_ratio
 
-        # Only apply noise to non-training nodes (we don't want to corrupt ground truth)
-        # Ensure tr_mask is on the same device as noise_mask
-        tr_mask_device = self.tr_mask.to(self.info_dict['device'])
-        non_training_mask = ~tr_mask_device
-        final_noise_mask = noise_mask & non_training_mask
-
-        if final_noise_mask.sum() > 0:
+        if noise_mask.sum() > 0:
             with torch.no_grad():
                 x_data = self.g.x.to(self.info_dict['device'])
                 edge_index = self.ori_edge_index.to(self.info_dict['device'])
@@ -424,7 +418,7 @@ class ViolinTrainer(BaseTrainer):
                 second_best = top_indices[:, 1]
 
                 # Apply label noise: use second-most likely class
-                pred_labels[final_noise_mask] = second_best[final_noise_mask]
+                pred_labels[noise_mask] = second_best[noise_mask]
 
         return pred_labels
 
@@ -711,13 +705,7 @@ class CoCoVinTrainer(BaseTrainer):
         num_nodes = len(pred_labels)
         noise_mask = torch.rand(num_nodes, device=self.info_dict['device']) < noise_ratio
 
-        # Only apply noise to non-training nodes (we don't want to corrupt ground truth)
-        # Ensure tr_mask is on the same device as noise_mask
-        tr_mask_device = self.tr_mask.to(self.info_dict['device'])
-        non_training_mask = ~tr_mask_device
-        final_noise_mask = noise_mask & non_training_mask
-
-        if final_noise_mask.sum() > 0:
+        if noise_mask.sum() > 0:
             with torch.no_grad():
                 x_data = self.g.x.to(self.info_dict['device'])
                 edge_index = self.ori_edge_index.to(self.info_dict['device'])
@@ -729,7 +717,7 @@ class CoCoVinTrainer(BaseTrainer):
                 second_best = top_indices[:, 1]
 
                 # Apply label noise: use second-most likely class
-                pred_labels[final_noise_mask] = second_best[final_noise_mask]
+                pred_labels[noise_mask] = second_best[noise_mask]
 
         return pred_labels
 
