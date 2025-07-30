@@ -575,73 +575,109 @@ class CoCoVinTrainer(BaseTrainer):
         cls_nids = self.tr_nid
         cls_labels = self.tr_y.to(self.info_dict['device'])
         con_nids = torch.cat((self.val_nid, self.tt_nid))
-        ctr_nids = torch.cat((self.val_nid, self.tt_nid))
-        ctr_labels_pos = torch.ones_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
-        ctr_labels_neg = torch.zeros_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
 
         tic = time.time()
         self.model.train()
         self.Dis.train()
 
-        with torch.set_grad_enabled(True):
-            x_data = self.g.x.to(self.info_dict['device'])
+        # Initialize epoch metrics
+        epoch_loss = torch.tensor([], device=self.info_dict['device'])
+        epoch_cls_loss = torch.tensor([], device=self.info_dict['device'])
+        epoch_con_loss = torch.tensor([], device=self.info_dict['device'])
+        epoch_vl_loss = torch.tensor([], device=self.info_dict['device'])
+        epoch_ctr_loss_pos = torch.tensor([], device=self.info_dict['device'])
+        epoch_ctr_loss_neg = torch.tensor([], device=self.info_dict['device'])
+        epoch_acc = []
+        epoch_micro_f1 = []
+        epoch_macro_f1 = []
+
+        # Process data in batches like original CoCoS
+        cls_array = list(range(self.info_dict['out_dim']))
+        n_batches = len(cls_array)
+
+        for k in range(n_batches):
+            # STEP 1: CoCoS feature shuffling (like original)
+            ori_nfeat = self.g.x.to(self.info_dict['device'])
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
 
-            # STEP 1: Apply CoCoS feature shuffling to create View 1
-            view1_feat = self.shuffle_feat(x_data)
-            view1_logits = self.model(view1_feat, ori_edge_index)
+            # Generate shuffled features for positive pairs
+            shuf_nfeat = self.shuffle_feat(ori_nfeat)
 
-            # Original graph logits
-            ori_logits = self.model(x_data, ori_edge_index)
+            # Get logits from both views
+            ori_logits = self.model(ori_nfeat, ori_edge_index)
+            shuf_logits = self.model(shuf_nfeat, ori_edge_index)
 
-            # CoCoS contrastive loss between View 1 and Original
-            epoch_ctr_loss = self.compute_cocos_loss(view1_logits, ori_logits, ctr_nids, ctr_labels_pos, ctr_labels_neg)
+            # STEP 2: Apply Violin virtual links to shuffled view
+            view2_edge_index = self.add_VOs_to_view(shuf_logits)
+            aug_logits = self.model(shuf_nfeat, view2_edge_index)
 
-            # STEP 2: Apply Violin on View 1 to create View 2
-            # Use View 1's predictions to add virtual links
-            view2_edge_index = self.add_VOs_to_view(view1_logits)
-            view2_logits = self.model(view1_feat, view2_edge_index)  # Use View 1 features with new edges
+            # Compute losses exactly like original implementations
 
-            # Violin losses on View 2
-            view1_conf = torch.softmax(view1_logits, dim=1)
-            view2_conf = torch.softmax(view2_logits, dim=1)
-
-            # Consistency loss between View 1 and View 2
-            epoch_con_loss = torch.abs(view1_conf[con_nids] - view2_conf[con_nids]).sum(dim=1).mean()
-
-            # Virtual link loss between View 2 and Original
-            ori_conf = torch.softmax(ori_logits, dim=1)
-            epoch_vl_loss = self.compute_vl_loss(ori_conf, view2_conf)
-
-            # Classification loss
+            # 1. Classification loss (like original Violin)
             if self.info_dict['cls_mode'] == 'ori':
-                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                epoch_cls_loss_k = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
                 _, preds = torch.max(ori_logits[cls_nids], dim=1)
             elif self.info_dict['cls_mode'] == 'virt':
-                epoch_cls_loss = self.crs_entropy_fn(view2_logits[cls_nids], cls_labels)
-                _, preds = torch.max(view2_logits[cls_nids], dim=1)
+                epoch_cls_loss_k = self.crs_entropy_fn(aug_logits[cls_nids], cls_labels)
+                _, preds = torch.max(aug_logits[cls_nids], dim=1)
             elif self.info_dict['cls_mode'] == 'both':
-                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
-                                       self.crs_entropy_fn(view2_logits[cls_nids], cls_labels))
-                _, preds = torch.max((ori_logits + view2_logits)[cls_nids], dim=1)
+                epoch_cls_loss_k = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
+                                          self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
+                _, preds = torch.max((ori_logits + aug_logits)[cls_nids], dim=1)
             else:
                 raise ValueError("Unexpected cls_mode parameter: {}".format(self.info_dict['cls_mode']))
 
-            # Combined loss
-            epoch_loss = (epoch_cls_loss +
-                         self.info_dict['alpha'] * epoch_con_loss +
-                         self.info_dict['gamma'] * epoch_vl_loss +
-                         self.info_dict['beta'] * epoch_ctr_loss)
+            # 2. Consistency loss (like original Violin)
+            ori_conf = torch.softmax(ori_logits, dim=1)
+            aug_conf = torch.softmax(aug_logits, dim=1)
+            epoch_con_loss_k = torch.abs(ori_conf[con_nids] - aug_conf[con_nids]).sum(dim=1).mean()
+
+            # 3. Virtual link loss (like original Violin) - between shuffled and augmented views
+            shuf_conf = torch.softmax(shuf_logits, dim=1)
+            epoch_vl_loss_k = self.compute_vl_loss(shuf_conf, aug_conf)
+
+            # 4. CoCoS contrastive losses (like original CoCoS)
+            ctr_nids = torch.cat((self.val_nid, self.tt_nid))
+
+            # Positive contrastive loss
+            pos_score = self.Dis(torch.cat((ori_logits, shuf_logits), dim=-1))
+            pos_labels = torch.ones(pos_score.shape[0], 1, device=self.info_dict['device'])
+            epoch_ctr_loss_pos_k = self.bce_fn(pos_score[ctr_nids], pos_labels[ctr_nids])
+
+            # Negative contrastive loss
+            neg_nids = self.gen_neg_nids()
+            neg_shuf_logits = shuf_logits[neg_nids].detach()
+            neg_score = self.Dis(torch.cat((ori_logits, neg_shuf_logits), dim=-1))
+            neg_labels = torch.zeros(neg_score.shape[0], 1, device=self.info_dict['device'])
+            epoch_ctr_loss_neg_k = self.bce_fn(neg_score[ctr_nids], neg_labels[ctr_nids])
+
+            # Combined loss for this batch
+            epoch_loss_k = (epoch_cls_loss_k +
+                            self.info_dict['alpha'] * epoch_con_loss_k +
+                            self.info_dict['gamma'] * epoch_vl_loss_k +
+                            self.info_dict['beta'] * (epoch_ctr_loss_pos_k + epoch_ctr_loss_neg_k))
 
             self.opt.zero_grad()
-            epoch_loss.backward()
+            epoch_loss_k.backward()
             self.opt.step()
 
-            epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
-            epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
-            epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
+            # Compute metrics
+            epoch_acc_k = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
+            epoch_micro_f1_k = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
+            epoch_macro_f1_k = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
-        return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
+            # Store metrics
+            epoch_acc.append(epoch_acc_k)
+            epoch_loss = torch.cat((epoch_loss, epoch_loss_k.cpu().unsqueeze(dim=0)), dim=0)
+            epoch_cls_loss = torch.cat((epoch_cls_loss, epoch_cls_loss_k.cpu().unsqueeze(dim=0)), dim=0)
+            epoch_con_loss = torch.cat((epoch_con_loss, epoch_con_loss_k.cpu().unsqueeze(dim=0)), dim=0)
+            epoch_vl_loss = torch.cat((epoch_vl_loss, epoch_vl_loss_k.cpu().unsqueeze(dim=0)), dim=0)
+            epoch_ctr_loss_pos = torch.cat((epoch_ctr_loss_pos, epoch_ctr_loss_pos_k.cpu().unsqueeze(dim=0)), dim=0)
+            epoch_ctr_loss_neg = torch.cat((epoch_ctr_loss_neg, epoch_ctr_loss_neg_k.cpu().unsqueeze(dim=0)), dim=0)
+            epoch_micro_f1.append(epoch_micro_f1_k)
+            epoch_macro_f1.append(epoch_macro_f1_k)
+
+        return epoch_loss.mean().item(), np.mean(epoch_acc), np.mean(epoch_micro_f1), np.mean(epoch_macro_f1)
 
     def compute_cocos_loss(self, view1_logits, ori_logits, ctr_nids, ctr_labels_pos, ctr_labels_neg):
         """Compute CoCoS contrastive loss between view1 and original"""
@@ -909,25 +945,26 @@ class CoCoVinTrainer(BaseTrainer):
     # shuffle_feat, shuffle_nids, gen_neg_nids
 
     def shuffle_feat(self, nfeat):
+        """Shuffle features within classes like original CoCoS"""
         pos_feat = nfeat.clone().detach()
 
         nid = torch.arange(self.g.num_nodes, device=self.info_dict['device'])
-        labels = self.pred_labels
-        if labels == None:
+        labels = self.pred_labels.to(self.info_dict['device'])
+        if labels is None:
             raise ValueError('The class of unlabeled nodes have not been estimated!')
 
-        # generate positive features
-        shuf_nid = torch.zeros_like(nid).to(self.info_dict['device'])
+        # Generate positive features
+        shuf_nid = torch.zeros_like(nid)
         for i in range(self.info_dict['out_dim']):
-            # position index of the i-th class
+            # Position index of the i-th class
             i_pos = torch.where(labels == i)[0]
-            # node ids with label class i
+            # Node ids with label class i
             i_nid = nid[i_pos]
-            # shuffle the i-th class node ids
-            i_shuffle_ind = torch.randperm(len(i_pos)).to(self.info_dict['device'])
+            # Shuffle the i-th class node ids
+            i_shuffle_ind = torch.randperm(len(i_pos), device=self.info_dict['device'])
             i_nid_shuffled = i_nid[i_shuffle_ind]
-            # get new id arrangement for the i-th class
-            shuf_nid[i_pos] = i_nid_shuffled.to(self.info_dict['device'])
+            # Get new id arrangement for the i-th class
+            shuf_nid[i_pos] = i_nid_shuffled
         pos_feat[nid] = nfeat[shuf_nid].detach()
 
         return pos_feat
@@ -954,19 +991,20 @@ class CoCoVinTrainer(BaseTrainer):
         return shuf_nid
 
     def gen_neg_nids(self):
+        """Generate negative node IDs like original CoCoS"""
         num_nodes = self.g.num_nodes
         nid = torch.arange(num_nodes, device=self.info_dict['device'])
-        labels = self.pred_labels
+        labels = self.pred_labels.to(self.info_dict['device'])
 
-        # randomly sample an instance as the negative sample, which is from a (estimated) different class
-        shuf_nid = torch.randperm(num_nodes).to(self.info_dict['device'])
+        # Randomly sample negative pairs from different classes
+        shuf_nid = torch.randperm(num_nodes, device=self.info_dict['device'])
         for i in range(self.info_dict['out_dim']):
-            sample_prob = 1 / len(nid) * torch.ones_like(nid)
-            # position index of the i-th class
+            sample_prob = torch.ones(len(nid), device=self.info_dict['device']) / len(nid)
+            # Position index of the i-th class
             i_pos = torch.where(labels == i)[0]
-            # set the sampling prob to be 0 so that the node from the same class will not be sampled
+            # Set sampling prob to 0 for same class nodes
             sample_prob[i_pos] = 0
-            i_neg = torch.multinomial(sample_prob, len(i_pos), replacement=True).to(self.info_dict['device'])
+            i_neg = torch.multinomial(sample_prob, len(i_pos), replacement=True)
             shuf_nid[i_pos] = i_neg
 
         return shuf_nid
