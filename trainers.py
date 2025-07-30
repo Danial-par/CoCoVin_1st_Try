@@ -603,6 +603,11 @@ class CoCoVinTrainer(BaseTrainer):
             return self.train_epoch_violin_only(epoch_i)
 
     def train_epoch_cocos_only(self, epoch_i):
+        # Use clean labels for CoCoS
+        if hasattr(self, 'pred_labels_clean'):
+            current_pred_labels = self.pred_labels
+            self.pred_labels = self.pred_labels_clean  # Switch to clean labels
+
         # Classification + CoCoS contrastive loss only
         cls_nids = self.tr_nid
         cls_labels = self.tr_y.to(self.info_dict['device'])
@@ -616,7 +621,7 @@ class CoCoVinTrainer(BaseTrainer):
             x_data = self.g.x.to(self.info_dict['device'])
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
 
-            # Forward passes for CoCoS
+            # Forward passes for CoCoS - now using clean labels
             ori_logits = self.model(x_data, ori_edge_index)
             shuf_feat = self.shuffle_feat(x_data)
             shuf_logits = self.model(shuf_feat, ori_edge_index)
@@ -650,6 +655,10 @@ class CoCoVinTrainer(BaseTrainer):
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
             epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
+
+        # Restore noisy labels
+        if hasattr(self, 'pred_labels_clean'):
+            self.pred_labels = current_pred_labels
 
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
@@ -815,7 +824,6 @@ class CoCoVinTrainer(BaseTrainer):
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
 
     def get_pred_labels(self):
-
         # load the pretrained model and use it to estimate the labels
         cur_model_state_dict = deepcopy(self.model.state_dict())
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -828,13 +836,19 @@ class CoCoVinTrainer(BaseTrainer):
 
             _, preds = torch.max(logits, dim=1)
             conf = torch.softmax(logits, dim=1).max(dim=1)[0]
-            self.pred_labels = preds
-            # for training nodes, the estimated labels will be replaced by their ground-truth labels
-            self.pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
-            self.pred_conf = conf
 
-            # Add label noise to predicted labels
-            self.pred_labels = self.add_label_noise(self.pred_labels, self.pred_conf, noise_ratio=0.1)
+            # Store clean predictions for CoCoS
+            clean_pred_labels = preds.clone()
+            clean_pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
+            self.pred_labels_clean = clean_pred_labels  # Clean version for CoCoS
+
+            # Store noisy predictions for Violin
+            noisy_pred_labels = preds.clone()
+            noisy_pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
+            noisy_pred_labels = self.add_label_noise(noisy_pred_labels, conf, noise_ratio=0.1)
+            self.pred_labels = noisy_pred_labels  # Noisy version for Violin
+
+            self.pred_conf = conf
 
             pretr_val_acc = torch.sum(preds[self.val_nid].cpu() == self.labels[self.val_nid]).item() * 1.0 / \
                             self.labels[self.val_nid].shape[0]
@@ -846,6 +860,13 @@ class CoCoVinTrainer(BaseTrainer):
         # reload the current model's parameters
         self.model.load_state_dict(cur_model_state_dict)
         self.pred_label_flag = False
+
+    def set_labels_for_method(self, use_clean=True):
+        """Switch between clean and noisy labels"""
+        if use_clean and hasattr(self, 'pred_labels_clean'):
+            self.pred_labels = self.pred_labels_clean
+        elif hasattr(self, 'pred_labels_noisy'):
+            self.pred_labels = self.pred_labels_noisy
 
     def set_conf_thrs(self, preds, conf, nids):
 
