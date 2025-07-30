@@ -669,11 +669,12 @@ class CoCoVinTrainer(BaseTrainer):
         conf = view_conf
         conf_mask = conf >= self.conf_thrs
 
-        ori_adj = self.ori_edge_index
+        # FIX: Ensure ori_adj is on the correct device
+        ori_adj = self.ori_edge_index.to(self.info_dict['device'])
         n_vo = self.info_dict['m']
         virt_edges = []
 
-        # FIX: Move masks to the correct device
+        # Move masks to the correct device
         tr_mask = self.g.train_mask.bool().to(self.info_dict['device'])
         other_mask = ~tr_mask
 
@@ -688,13 +689,13 @@ class CoCoVinTrainer(BaseTrainer):
 
                 if tr_k_mask.sum() > 0:
                     tr_vl_k_idx = torch.arange(self.g.num_nodes, device=self.info_dict['device'])[k_mask]
-                    if len(tr_vl_k_idx) > 0:  # Add safety check
+                    if len(tr_vl_k_idx) > 0:
                         tr_vl_rand_idx = torch.from_numpy(np.random.choice(tr_vl_k_idx.cpu(), tr_k_mask.sum().item(), replace=True)).to(self.info_dict['device'])
                         srcs[tr_k_mask] = tr_vl_rand_idx
 
                 if other_k_mask.sum() > 0:
                     other_vl_k_idx = torch.arange(self.g.num_nodes, device=self.info_dict['device'])[k_mask]
-                    if len(other_vl_k_idx) > 0:  # Add safety check
+                    if len(other_vl_k_idx) > 0:
                         other_vl_rand_idx = torch.from_numpy(np.random.choice(other_vl_k_idx.cpu(), other_k_mask.sum().item(), replace=True)).to(self.info_dict['device'])
                         srcs[other_k_mask] = other_vl_rand_idx
 
@@ -718,10 +719,10 @@ class CoCoVinTrainer(BaseTrainer):
             # Store the virtual edges for loss computation
             self.current_view_virt_edges = full_virt_edges
 
-            return cur_adj.to(self.info_dict['device'])
+            return cur_adj
         else:
             self.current_view_virt_edges = None
-            return self.ori_edge_index.to(self.info_dict['device'])
+            return ori_adj
 
     def compute_vl_loss(self, ori_conf, view2_conf):
         """Compute virtual link loss between original and view2"""
