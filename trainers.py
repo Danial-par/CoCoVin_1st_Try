@@ -407,7 +407,9 @@ class ViolinTrainer(BaseTrainer):
         noise_mask = torch.rand(num_nodes, device=self.info_dict['device']) < noise_ratio
 
         # Only apply noise to non-training nodes (we don't want to corrupt ground truth)
-        non_training_mask = ~self.tr_mask
+        # Ensure tr_mask is on the same device as noise_mask
+        tr_mask_device = self.tr_mask.to(self.info_dict['device'])
+        non_training_mask = ~tr_mask_device
         final_noise_mask = noise_mask & non_training_mask
 
         if final_noise_mask.sum() > 0:
@@ -710,7 +712,9 @@ class CoCoVinTrainer(BaseTrainer):
         noise_mask = torch.rand(num_nodes, device=self.info_dict['device']) < noise_ratio
 
         # Only apply noise to non-training nodes (we don't want to corrupt ground truth)
-        non_training_mask = ~self.tr_mask
+        # Ensure tr_mask is on the same device as noise_mask
+        tr_mask_device = self.tr_mask.to(self.info_dict['device'])
+        non_training_mask = ~tr_mask_device
         final_noise_mask = noise_mask & non_training_mask
 
         if final_noise_mask.sum() > 0:
