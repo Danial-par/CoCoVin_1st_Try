@@ -580,13 +580,13 @@ class CoCoVinTrainer(BaseTrainer):
         self.model.train()
         self.Dis.train()
 
-        # Initialize epoch metrics
-        epoch_loss = torch.tensor([], device=self.info_dict['device'])
-        epoch_cls_loss = torch.tensor([], device=self.info_dict['device'])
-        epoch_con_loss = torch.tensor([], device=self.info_dict['device'])
-        epoch_vl_loss = torch.tensor([], device=self.info_dict['device'])
-        epoch_ctr_loss_pos = torch.tensor([], device=self.info_dict['device'])
-        epoch_ctr_loss_neg = torch.tensor([], device=self.info_dict['device'])
+        # Initialize epoch metrics - FIX: Initialize on CPU, not GPU
+        epoch_loss = []
+        epoch_cls_loss = []
+        epoch_con_loss = []
+        epoch_vl_loss = []
+        epoch_ctr_loss_pos = []
+        epoch_ctr_loss_neg = []
         epoch_acc = []
         epoch_micro_f1 = []
         epoch_macro_f1 = []
@@ -611,8 +611,6 @@ class CoCoVinTrainer(BaseTrainer):
             view2_edge_index = self.add_VOs_to_view(shuf_logits)
             aug_logits = self.model(shuf_nfeat, view2_edge_index)
 
-            # Compute losses exactly like original implementations
-
             # 1. Classification loss (like original Violin)
             if self.info_dict['cls_mode'] == 'ori':
                 epoch_cls_loss_k = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
@@ -622,7 +620,7 @@ class CoCoVinTrainer(BaseTrainer):
                 _, preds = torch.max(aug_logits[cls_nids], dim=1)
             elif self.info_dict['cls_mode'] == 'both':
                 epoch_cls_loss_k = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
-                                          self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
+                                        self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
                 _, preds = torch.max((ori_logits + aug_logits)[cls_nids], dim=1)
             else:
                 raise ValueError("Unexpected cls_mode parameter: {}".format(self.info_dict['cls_mode']))
@@ -653,9 +651,9 @@ class CoCoVinTrainer(BaseTrainer):
 
             # Combined loss for this batch
             epoch_loss_k = (epoch_cls_loss_k +
-                            self.info_dict['alpha'] * epoch_con_loss_k +
-                            self.info_dict['gamma'] * epoch_vl_loss_k +
-                            self.info_dict['beta'] * (epoch_ctr_loss_pos_k + epoch_ctr_loss_neg_k))
+                           self.info_dict['alpha'] * epoch_con_loss_k +
+                           self.info_dict['gamma'] * epoch_vl_loss_k +
+                           self.info_dict['beta'] * (epoch_ctr_loss_pos_k + epoch_ctr_loss_neg_k))
 
             self.opt.zero_grad()
             epoch_loss_k.backward()
@@ -666,18 +664,19 @@ class CoCoVinTrainer(BaseTrainer):
             epoch_micro_f1_k = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
             epoch_macro_f1_k = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
-            # Store metrics
+            # Store metrics - FIX: Use list append instead of tensor concatenation
             epoch_acc.append(epoch_acc_k)
-            epoch_loss = torch.cat((epoch_loss, epoch_loss_k.cpu().unsqueeze(dim=0)), dim=0)
-            epoch_cls_loss = torch.cat((epoch_cls_loss, epoch_cls_loss_k.cpu().unsqueeze(dim=0)), dim=0)
-            epoch_con_loss = torch.cat((epoch_con_loss, epoch_con_loss_k.cpu().unsqueeze(dim=0)), dim=0)
-            epoch_vl_loss = torch.cat((epoch_vl_loss, epoch_vl_loss_k.cpu().unsqueeze(dim=0)), dim=0)
-            epoch_ctr_loss_pos = torch.cat((epoch_ctr_loss_pos, epoch_ctr_loss_pos_k.cpu().unsqueeze(dim=0)), dim=0)
-            epoch_ctr_loss_neg = torch.cat((epoch_ctr_loss_neg, epoch_ctr_loss_neg_k.cpu().unsqueeze(dim=0)), dim=0)
+            epoch_loss.append(epoch_loss_k.cpu().item())
+            epoch_cls_loss.append(epoch_cls_loss_k.cpu().item())
+            epoch_con_loss.append(epoch_con_loss_k.cpu().item())
+            epoch_vl_loss.append(epoch_vl_loss_k.cpu().item())
+            epoch_ctr_loss_pos.append(epoch_ctr_loss_pos_k.cpu().item())
+            epoch_ctr_loss_neg.append(epoch_ctr_loss_neg_k.cpu().item())
             epoch_micro_f1.append(epoch_micro_f1_k)
             epoch_macro_f1.append(epoch_macro_f1_k)
 
-        return epoch_loss.mean().item(), np.mean(epoch_acc), np.mean(epoch_micro_f1), np.mean(epoch_macro_f1)
+        # Return averages
+        return np.mean(epoch_loss), np.mean(epoch_acc), np.mean(epoch_micro_f1), np.mean(epoch_macro_f1)
 
     def compute_cocos_loss(self, view1_logits, ori_logits, ctr_nids, ctr_labels_pos, ctr_labels_neg):
         """Compute CoCoS contrastive loss between view1 and original"""
