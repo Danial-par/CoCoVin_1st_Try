@@ -672,7 +672,9 @@ class CoCoVinTrainer(BaseTrainer):
         ori_adj = self.ori_edge_index
         n_vo = self.info_dict['m']
         virt_edges = []
-        tr_mask = self.g.train_mask.bool()
+
+        # FIX: Move masks to the correct device
+        tr_mask = self.g.train_mask.bool().to(self.info_dict['device'])
         other_mask = ~tr_mask
 
         label_list = list(set(labels.cpu().numpy().tolist()))
@@ -686,13 +688,15 @@ class CoCoVinTrainer(BaseTrainer):
 
                 if tr_k_mask.sum() > 0:
                     tr_vl_k_idx = torch.arange(self.g.num_nodes, device=self.info_dict['device'])[k_mask]
-                    tr_vl_rand_idx = torch.from_numpy(np.random.choice(tr_vl_k_idx.cpu(), tr_k_mask.sum().item(), replace=True)).to(self.info_dict['device'])
-                    srcs[tr_k_mask] = tr_vl_rand_idx
+                    if len(tr_vl_k_idx) > 0:  # Add safety check
+                        tr_vl_rand_idx = torch.from_numpy(np.random.choice(tr_vl_k_idx.cpu(), tr_k_mask.sum().item(), replace=True)).to(self.info_dict['device'])
+                        srcs[tr_k_mask] = tr_vl_rand_idx
 
                 if other_k_mask.sum() > 0:
                     other_vl_k_idx = torch.arange(self.g.num_nodes, device=self.info_dict['device'])[k_mask]
-                    other_vl_rand_idx = torch.from_numpy(np.random.choice(other_vl_k_idx.cpu(), other_k_mask.sum().item(), replace=True)).to(self.info_dict['device'])
-                    srcs[other_k_mask] = other_vl_rand_idx
+                    if len(other_vl_k_idx) > 0:  # Add safety check
+                        other_vl_rand_idx = torch.from_numpy(np.random.choice(other_vl_k_idx.cpu(), other_k_mask.sum().item(), replace=True)).to(self.info_dict['device'])
+                        srcs[other_k_mask] = other_vl_rand_idx
 
             qua_mask = srcs >= 0
             qua_mask = conf_mask * qua_mask
