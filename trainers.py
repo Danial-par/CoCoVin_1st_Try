@@ -928,7 +928,7 @@ class CoCoVinArxivTrainer(CoCoVinTrainer):
             shuf_logits = self.model(shuf_feat, ori_edge_index)
             tp_shuf_nids = self.shuffle_nids()
             tp_shuf_feat = shuf_feat[tp_shuf_nids]
-    
+
             # Classification loss with same modes as parent
             if self.info_dict.get('cocos_cls_mode', 'raw') == 'shuf':
                 epoch_cls_loss = self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
