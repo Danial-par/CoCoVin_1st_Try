@@ -20,7 +20,7 @@ class GCN(nn.Module):
         self.enc = nn.ModuleList()
         if use_linear:
             self.linear = nn.ModuleList()
-        self.norms = nn.ModuleList()
+        self.bns = nn.ModuleList()
 
         for i in range(info_dict['n_layers']):
             in_dim = info_dict['hid_dim'] if i > 0 else info_dict['in_dim']
@@ -57,7 +57,7 @@ class GCN(nn.Module):
                 h = h + linear
 
             if i < self.n_layers - 1:
-                h = self.norms[i](h)
+                h = self.bns[i](h)
                 h = self.activation(h)
                 h = self.dropout(h)
 
@@ -68,7 +68,7 @@ class GCN(nn.Module):
     def reset_parameters(self):
         for i in range(self.n_layers):
             self.enc[i].reset_parameters()
-            self.norms[i].reset_parameters()
+            self.bns[i].reset_parameters()
             if self.use_linear:
                 self.linear[i].reset_parameters()
 
