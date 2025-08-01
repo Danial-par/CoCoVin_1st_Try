@@ -27,13 +27,38 @@ def load_data(db, db_dir='./dataset'):
         data = Planetoid(db_dir, db, transform=transforms.NormalizeFeatures())
         g = data[0]
         out_dim = data.num_classes
+    elif db == 'ogbn-arxiv':
+        data = PygNodePropPredDataset(name=db, root=db_dir, transform=transforms.NormalizeFeatures())
+        g = data[0]
+        out_dim = data.num_classes
+
+        # Convert OGB format to standard format
+        split_idx = data.get_idx_split()
+        train_idx = split_idx['train']
+        val_idx = split_idx['valid']
+        test_idx = split_idx['test']
+
+        # Create boolean masks (standard format)
+        num_nodes = g.num_nodes
+        g.train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        g.val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        g.test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+
+        g.train_mask[train_idx] = True
+        g.val_mask[val_idx] = True
+        g.test_mask[test_idx] = True
+
+        # Store original indices for OGB evaluation
+        g.train_idx = train_idx
+        g.val_idx = val_idx
+        g.test_idx = test_idx
     else:
         raise ValueError('Unknown dataset: {}'.format(db))
 
     info_dict = {
         'in_dim': g.x.shape[1],
         'out_dim': out_dim
-        }
+    }
     return g, info_dict
 
 def set_seed(seed):
@@ -62,15 +87,24 @@ def main(args):
         # initialize a trainer
         backbone_list = ['GCN', 'GAT', 'SAGE', 'JKNet', 'GCN2', 'APPNPNet', 'GIN', 'SGC']
         if args.model in backbone_list:
-            trainer = getattr(trainers, 'BaseTrainer')(g, model, info_dict)
+            if args.dataset == 'ogbn-arxiv':
+                trainer = getattr(trainers, 'BaseArxivTrainer')(g, model, info_dict)
+            else:
+                trainer = getattr(trainers, 'BaseTrainer')(g, model, info_dict)
         elif args.model.startswith('CoCoVin'):
             info_dict.update({'backbone': args.model[7:]})
-            Dis = getattr(models, 'DisMLP')(info_dict)
+            Dis = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, 'DisMLP')(info_dict)
             Dis.to(info_dict['device'])
-            trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis)
+            if args.dataset == 'ogbn-arxiv':
+                trainer = getattr(trainers, 'CoCoVinArxivTrainer')(g, model, info_dict, Dis=Dis)
+            else:
+                trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis)
         elif args.model.startswith('Violin'):
             info_dict.update({'backbone': args.model[6:]})
-            trainer = getattr(trainers, 'ViolinTrainer')(g, model, info_dict)
+            if args.dataset == 'ogbn-arxiv':
+                trainer = getattr(trainers, 'ViolinArxivTrainer')(g, model, info_dict)
+            else:
+                trainer = getattr(trainers, 'ViolinTrainer')(g, model, info_dict)
         else:
             raise ValueError('Unknown model: {}'.format(args.model))
 
