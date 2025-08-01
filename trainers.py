@@ -1028,18 +1028,10 @@ class CoCoVinArxivTrainer(CoCoVinTrainer):
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
             logits = self.model(x_data, ori_edge_index)
 
-            # Validation
-            val_pred = logits[self.val_idx].argmax(dim=-1, keepdim=True)
-            val_true = self.g.y[self.val_idx]
-            val_acc = self.evaluator.eval({'y_true': val_true, 'y_pred': val_pred})['acc']
-
-            # Test
+            # Test results only (to match expected return format)
             test_pred = logits[self.test_idx].argmax(dim=-1, keepdim=True)
             test_true = self.g.y[self.test_idx]
             test_acc = self.evaluator.eval({'y_true': test_true, 'y_pred': test_pred})['acc']
-
-            # Calculate losses
-            val_loss = self.crs_entropy_fn(logits[self.val_idx], val_true.squeeze())
             test_loss = self.crs_entropy_fn(logits[self.test_idx], test_true.squeeze())
 
-        return (val_loss.item(), val_acc, val_acc, val_acc), (test_loss.item(), test_acc, test_acc, test_acc)
+        return test_loss.item(), test_acc, test_acc, test_acc
