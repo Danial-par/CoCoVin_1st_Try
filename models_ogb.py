@@ -31,7 +31,7 @@ class GCN(nn.Module):
             self.enc.append(GCNConv(in_dim, out_dim, bias=bias))
             if use_linear:
                 self.linear.append(nn.Linear(in_dim, out_dim, bias=False))
-            self.norms.append(nn.BatchNorm1d(out_dim) if bn else nn.Identity())
+            self.bns.append(nn.BatchNorm1d(out_dim) if bn else nn.Identity())
 
         self.input_drop = nn.Dropout(min(0.1, info_dict['dropout']))
         self.dropout = nn.Dropout(info_dict['dropout'])
