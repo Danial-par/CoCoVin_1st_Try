@@ -883,243 +883,163 @@ class CoCoVinArxivTrainer(CoCoVinTrainer):
         super().__init__(g, model, info_dict, Dis=Dis)
         self.evaluator = Evaluator(name='ogbn-arxiv')
 
+        # Add missing beta parameter
+        self.beta = info_dict.get('beta', 0.6)
+
         # Use indices instead of boolean masks for efficiency
-        split_idx = {'train': g.train_idx, 'valid': g.val_idx, 'test': g.test_idx}
-        self.train_idx = split_idx['train']
-        self.val_idx = split_idx['valid']
-        self.test_idx = split_idx['test']
-
-    def eval_model(self, model, mask_name='val'):
-        model.eval()
-        with torch.no_grad():
-            logits = model(self.g.x, self.g.edge_index)
-
-            if mask_name == 'val':
-                idx = self.val_idx
-            elif mask_name == 'test':
-                idx = self.test_idx
-            else:
-                idx = self.train_idx
-
-            pred = logits[idx].argmax(dim=-1, keepdim=True)
-            true = self.g.y[idx]
-
-            acc = self.evaluator.eval({
-                'y_true': true,
-                'y_pred': pred
-            })['acc']
-
-        return acc
+        self.train_idx = g.train_idx
+        self.val_idx = g.val_idx
+        self.test_idx = g.test_idx
 
     def train_epoch(self, epoch_i):
-        # Use mini-batch training for large dataset
+        # Follow parent class logic exactly
+        if epoch_i < self.phase1_epochs:
+            # Phase 1: CoCoS only - but we need predicted labels first
+            if self.pred_labels is None:
+                self.get_pred_labels()
+            return self.train_epoch_cocos_only(epoch_i)
+        else:
+            # Phase 2: Violin only - need virtual edges
+            if self.pred_label_flag:
+                self.get_pred_labels()
+                self.add_VOs()
+                self.pred_label_flag = False
+            return self.train_epoch_violin_only(epoch_i)
+
+    def train_epoch_cocos_only(self, epoch_i):
+        # Use batch training for memory efficiency but follow parent logic
+        batch_size = min(512, len(self.train_idx))
+        cls_nids = self.train_idx[:batch_size]
+        cls_labels = self.g.y[cls_nids].squeeze().to(self.info_dict['device'])
+        ctr_nids = torch.cat((self.val_idx[:256], self.test_idx[:256]))
+        ctr_labels_pos = torch.ones(len(ctr_nids), 1, device=self.info_dict['device']).float()
+        ctr_labels_neg = torch.zeros(len(ctr_nids), 1, device=self.info_dict['device']).float()
+
         self.model.train()
         self.Dis.train()
 
-        # Sample subset of training nodes for efficiency
-        perm = torch.randperm(len(self.train_idx))
-        batch_size = min(1024, len(self.train_idx))  # Adjust batch size as needed
+        with torch.set_grad_enabled(True):
+            x_data = self.g.x.to(self.info_dict['device'])
+            ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
 
-        total_loss = 0
-        num_batches = 0
+            # Forward passes for CoCoS (following parent exactly)
+            ori_logits = self.model(x_data, ori_edge_index)
+            shuf_feat = self.shuffle_feat(x_data)
+            shuf_logits = self.model(shuf_feat, ori_edge_index)
+            tp_shuf_nids = self.shuffle_nids()
+            tp_shuf_logits = shuf_logits[tp_shuf_nids]
 
-        for start in range(0, len(perm), batch_size):
-            end = min(start + batch_size, len(perm))
-            batch_idx = self.train_idx[perm[start:end]]
-
-            self.optimizer.zero_grad()
-            self.D_optimizer.zero_grad()
-
-            # Forward pass on full graph but compute loss only on batch
-            h = self.model(self.g.x, self.g.edge_index)
-
-            # Compute losses for the batch
-            cls_loss = F.cross_entropy(h[batch_idx], self.g.y[batch_idx].squeeze())
-
-            # CoCoVin contrastive loss (adapted for batch)
-            contrastive_loss = self.compute_contrastive_loss(h, batch_idx)
-
-            total_loss_batch = cls_loss + self.beta * contrastive_loss
-            total_loss_batch.backward()
-
-            self.optimizer.step()
-            self.D_optimizer.step()
-
-            total_loss += total_loss_batch.item()
-            num_batches += 1
-
-        return total_loss / num_batches if num_batches > 0 else 0
-
-    def compute_contrastive_loss(self, h, batch_idx):
-        # Simplified contrastive loss for batch processing
-        # You may need to adapt this based on your CoCoVin implementation
-        batch_emb = h[batch_idx]
-
-        # Generate positive and negative samples within the batch
-        pos_pairs, neg_pairs = self.generate_pairs(batch_idx)
-
-        if len(pos_pairs) == 0 or len(neg_pairs) == 0:
-            return torch.tensor(0.0, device=h.device)
-
-        # Compute contrastive loss
-        pos_sim = F.cosine_similarity(h[pos_pairs[:, 0]], h[pos_pairs[:, 1]])
-        neg_sim = F.cosine_similarity(h[neg_pairs[:, 0]], h[neg_pairs[:, 1]])
-
-        contrastive_loss = -torch.log(torch.sigmoid(pos_sim)).mean() - torch.log(torch.sigmoid(-neg_sim)).mean()
-
-        return contrastive_loss
-
-    def generate_pairs(self, batch_idx):
-        # Generate positive and negative pairs within the batch
-        # This is a simplified version - adapt based on your CoCoVin logic
-        batch_labels = self.g.y[batch_idx].squeeze()
-
-        pos_pairs = []
-        neg_pairs = []
-
-        for i, label_i in enumerate(batch_labels):
-            for j, label_j in enumerate(batch_labels):
-                if i != j:
-                    if label_i == label_j:
-                        pos_pairs.append([batch_idx[i], batch_idx[j]])
-                    else:
-                        neg_pairs.append([batch_idx[i], batch_idx[j]])
-
-        pos_pairs = torch.tensor(pos_pairs, device=self.g.x.device) if pos_pairs else torch.empty(0, 2,
-                                                                                                  dtype=torch.long,
-                                                                                                  device=self.g.x.device)
-        neg_pairs = torch.tensor(neg_pairs, device=self.g.x.device) if neg_pairs else torch.empty(0, 2,
-                                                                                                  dtype=torch.long,
-                                                                                                  device=self.g.x.device)
-
-        # Sample subset if too many pairs
-        if len(pos_pairs) > 100:
-            pos_pairs = pos_pairs[torch.randperm(len(pos_pairs))[:100]]
-        if len(neg_pairs) > 100:
-            neg_pairs = neg_pairs[torch.randperm(len(neg_pairs))[:100]]
-
-        return pos_pairs, neg_pairs
-
-
-class CoCoVinArxivTrainer(CoCoVinTrainer):
-    def __init__(self, g, model, info_dict, Dis=None):
-        super().__init__(g, model, info_dict, Dis=Dis)
-        self.evaluator = Evaluator(name='ogbn-arxiv')
-
-        # Use indices instead of boolean masks for efficiency
-        split_idx = {'train': g.train_idx, 'valid': g.val_idx, 'test': g.test_idx}
-        self.train_idx = split_idx['train']
-        self.val_idx = split_idx['valid']
-        self.test_idx = split_idx['test']
-
-    def eval_model(self, model, mask_name='val'):
-        model.eval()
-        with torch.no_grad():
-            logits = model(self.g.x, self.g.edge_index)
-
-            if mask_name == 'val':
-                idx = self.val_idx
-            elif mask_name == 'test':
-                idx = self.test_idx
+            # Classification loss with same modes as parent
+            if self.info_dict.get('cocos_cls_mode', 'raw') == 'shuf':
+                epoch_cls_loss = self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
+                _, preds = torch.max(shuf_logits[cls_nids], dim=1)
+            elif self.info_dict.get('cocos_cls_mode', 'raw') == 'raw':
+                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                _, preds = torch.max(ori_logits[cls_nids], dim=1)
+            elif self.info_dict.get('cocos_cls_mode', 'raw') == 'both':
+                epoch_cls_loss = (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
+                                self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)) / 2.0
+                _, preds = torch.max(ori_logits[cls_nids], dim=1)
             else:
-                idx = self.train_idx
+                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            pred = logits[idx].argmax(dim=-1, keepdim=True)
-            true = self.g.y[idx]
+            # CoCoS Contrastive Loss (exactly like parent)
+            pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
+            pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
+            pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
+            pos_loss_s = self.bce_fn(pos_score_s[ctr_nids], ctr_labels_pos)
+            epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
 
-            acc = self.evaluator.eval({
-                'y_true': true,
-                'y_pred': pred
-            })['acc']
+            neg_nids = self.gen_neg_nids()
+            neg_ori_logits = ori_logits[neg_nids].detach()
+            neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
+            epoch_ctr_loss_neg = self.bce_fn(neg_score[ctr_nids], ctr_labels_neg)
+            epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
 
-        return acc
+            # Total loss: classification + CoCoS only
+            epoch_loss = epoch_cls_loss + self.info_dict['beta'] * epoch_ctr_loss
 
-    def train_epoch(self, epoch_i):
-        # Use mini-batch training for large dataset
+            self.opt.zero_grad()
+            epoch_loss.backward()
+            self.opt.step()
+
+            epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
+            epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
+            epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
+
+        return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
+
+    def train_epoch_violin_only(self, epoch_i):
+        # Follow parent Violin logic exactly with batching
+        batch_size = min(512, len(self.train_idx))
+        cls_nids = self.train_idx[:batch_size]
+        cls_labels = self.g.y[cls_nids].squeeze().to(self.info_dict['device'])
+        con_nids = torch.cat((self.val_idx[:256], self.test_idx[:256]))
+
         self.model.train()
-        self.Dis.train()
 
-        # Sample subset of training nodes for efficiency
-        perm = torch.randperm(len(self.train_idx))
-        batch_size = min(1024, len(self.train_idx))  # Adjust batch size as needed
+        with torch.set_grad_enabled(True):
+            x_data = self.g.x.to(self.info_dict['device'])
+            ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
+            aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
+            virt_edge_index = self.virt_edge_index.to(self.info_dict['device'])
 
-        total_loss = 0
-        num_batches = 0
+            ori_logits = self.model(x_data, ori_edge_index)
+            ori_conf = torch.softmax(ori_logits, dim=1)
+            aug_logits = self.model(x_data, aug_edge_index)
+            aug_conf = torch.softmax(aug_logits, dim=1)
 
-        for start in range(0, len(perm), batch_size):
-            end = min(start + batch_size, len(perm))
-            batch_idx = self.train_idx[perm[start:end]]
+            # Violin losses (exactly like parent)
+            epoch_con_loss = torch.abs(ori_conf[con_nids] - aug_conf[con_nids]).sum(dim=1).mean()
+            num_unq_vls = virt_edge_index.shape[1] // 2
+            epoch_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] -
+                                    aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
 
-            self.optimizer.zero_grad()
-            self.D_optimizer.zero_grad()
+            # Classification loss with same modes as parent
+            if self.info_dict['cls_mode'] == 'ori':
+                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                _, preds = torch.max(ori_logits[cls_nids], dim=1)
+            elif self.info_dict['cls_mode'] == 'virt':
+                epoch_cls_loss = self.crs_entropy_fn(aug_logits[cls_nids], cls_labels)
+                _, preds = torch.max(aug_logits[cls_nids], dim=1)
+            elif self.info_dict['cls_mode'] == 'both':
+                epoch_cls_loss = (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
+                                self.crs_entropy_fn(aug_logits[cls_nids], cls_labels)) / 2.0
+                _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            # Forward pass on full graph but compute loss only on batch
-            h = self.model(self.g.x, self.g.edge_index)
+            # Total loss: classification + Violin only
+            epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss
 
-            # Compute losses for the batch
-            cls_loss = F.cross_entropy(h[batch_idx], self.g.y[batch_idx].squeeze())
+            self.opt.zero_grad()
+            epoch_loss.backward()
+            self.opt.step()
 
-            # CoCoVin contrastive loss (adapted for batch)
-            contrastive_loss = self.compute_contrastive_loss(h, batch_idx)
+            epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
+            epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
+            epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
-            total_loss_batch = cls_loss + self.beta * contrastive_loss
-            total_loss_batch.backward()
+        return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
-            self.optimizer.step()
-            self.D_optimizer.step()
+    def eval_epoch(self, epoch_i):
+        self.model.eval()
+        with torch.no_grad():
+            x_data = self.g.x.to(self.info_dict['device'])
+            ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
+            logits = self.model(x_data, ori_edge_index)
 
-            total_loss += total_loss_batch.item()
-            num_batches += 1
+            # Validation
+            val_pred = logits[self.val_idx].argmax(dim=-1, keepdim=True)
+            val_true = self.g.y[self.val_idx]
+            val_acc = self.evaluator.eval({'y_true': val_true, 'y_pred': val_pred})['acc']
 
-        return total_loss / num_batches if num_batches > 0 else 0
+            # Test
+            test_pred = logits[self.test_idx].argmax(dim=-1, keepdim=True)
+            test_true = self.g.y[self.test_idx]
+            test_acc = self.evaluator.eval({'y_true': test_true, 'y_pred': test_pred})['acc']
 
-    def compute_contrastive_loss(self, h, batch_idx):
-        # Simplified contrastive loss for batch processing
-        # You may need to adapt this based on your CoCoVin implementation
-        batch_emb = h[batch_idx]
+            # Calculate losses
+            val_loss = self.crs_entropy_fn(logits[self.val_idx], val_true.squeeze())
+            test_loss = self.crs_entropy_fn(logits[self.test_idx], test_true.squeeze())
 
-        # Generate positive and negative samples within the batch
-        pos_pairs, neg_pairs = self.generate_pairs(batch_idx)
-
-        if len(pos_pairs) == 0 or len(neg_pairs) == 0:
-            return torch.tensor(0.0, device=h.device)
-
-        # Compute contrastive loss
-        pos_sim = F.cosine_similarity(h[pos_pairs[:, 0]], h[pos_pairs[:, 1]])
-        neg_sim = F.cosine_similarity(h[neg_pairs[:, 0]], h[neg_pairs[:, 1]])
-
-        contrastive_loss = -torch.log(torch.sigmoid(pos_sim)).mean() - torch.log(torch.sigmoid(-neg_sim)).mean()
-
-        return contrastive_loss
-
-    def generate_pairs(self, batch_idx):
-        # Generate positive and negative pairs within the batch
-        # This is a simplified version - adapt based on your CoCoVin logic
-        batch_labels = self.g.y[batch_idx].squeeze()
-
-        pos_pairs = []
-        neg_pairs = []
-
-        for i, label_i in enumerate(batch_labels):
-            for j, label_j in enumerate(batch_labels):
-                if i != j:
-                    if label_i == label_j:
-                        pos_pairs.append([batch_idx[i], batch_idx[j]])
-                    else:
-                        neg_pairs.append([batch_idx[i], batch_idx[j]])
-
-        pos_pairs = torch.tensor(pos_pairs, device=self.g.x.device) if pos_pairs else torch.empty(0, 2,
-                                                                                                  dtype=torch.long,
-                                                                                                  device=self.g.x.device)
-        neg_pairs = torch.tensor(neg_pairs, device=self.g.x.device) if neg_pairs else torch.empty(0, 2,
-                                                                                                  dtype=torch.long,
-                                                                                                  device=self.g.x.device)
-
-        # Sample subset if too many pairs
-        if len(pos_pairs) > 100:
-            pos_pairs = pos_pairs[torch.randperm(len(pos_pairs))[:100]]
-        if len(neg_pairs) > 100:
-            neg_pairs = neg_pairs[torch.randperm(len(neg_pairs))[:100]]
-
-        return pos_pairs, neg_pairs
-
+        return (val_loss.item(), val_acc, val_acc, val_acc), (test_loss.item(), test_acc, test_acc, test_acc)
