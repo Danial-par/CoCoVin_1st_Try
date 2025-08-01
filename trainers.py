@@ -922,13 +922,13 @@ class CoCoVinArxivTrainer(CoCoVinTrainer):
             x_data = self.g.x.to(self.info_dict['device'])
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
 
-            # Forward passes for CoCoS (following parent exactly)
+            # Forward passes for CoCoS
             ori_logits = self.model(x_data, ori_edge_index)
             shuf_feat = self.shuffle_feat(x_data)
             shuf_logits = self.model(shuf_feat, ori_edge_index)
             tp_shuf_nids = self.shuffle_nids()
-            tp_shuf_logits = shuf_logits[tp_shuf_nids]
-
+            tp_shuf_feat = shuf_feat[tp_shuf_nids]
+    
             # Classification loss with same modes as parent
             if self.info_dict.get('cocos_cls_mode', 'raw') == 'shuf':
                 epoch_cls_loss = self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
@@ -944,16 +944,16 @@ class CoCoVinArxivTrainer(CoCoVinTrainer):
                 epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
                 _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            # CoCoS Contrastive Loss (exactly like parent)
-            pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
+            # CoCoS Contrastive Loss - Use features instead of logits
+            pos_score_f = self.Dis(torch.cat((shuf_feat, x_data), dim=-1))
             pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
-            pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
+            pos_score_s = self.Dis(torch.cat((tp_shuf_feat, shuf_feat), dim=-1))
             pos_loss_s = self.bce_fn(pos_score_s[ctr_nids], ctr_labels_pos)
             epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
 
             neg_nids = self.gen_neg_nids()
-            neg_ori_logits = ori_logits[neg_nids].detach()
-            neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
+            neg_ori_feat = x_data[neg_nids].detach()
+            neg_score = self.Dis(torch.cat((x_data, neg_ori_feat), dim=-1))
             epoch_ctr_loss_neg = self.bce_fn(neg_score[ctr_nids], ctr_labels_neg)
             epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
 
