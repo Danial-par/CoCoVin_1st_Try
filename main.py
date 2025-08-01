@@ -81,10 +81,6 @@ def main(args):
         val_acc, tt_acc, val_acc_fin, tt_acc_fin, microf1, macrof1 = trainer.train()
         toc = time.time()
 
-        # Save the results for the current round
-        results_filename = os.path.join(results_dir, f"{args.model}_{args.dataset}_round_{i}.csv")
-        save_results(history, results_filename)
-
         acc_list.append(tt_acc)
         time_cost = toc - tic
         time_cost_list.append(time_cost)
