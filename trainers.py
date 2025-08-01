@@ -536,7 +536,16 @@ class CoCoVinTrainer(BaseTrainer):
             tp_shuf_logits = shuf_logits[tp_shuf_nids]
 
             # Classification loss
-            epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+            # Add classification mode support like original CoCoS
+            if self.info_dict['cocos_cls_mode'] == 'shuf':
+                epoch_cls_loss = self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
+            elif self.info_dict['cocos_cls_mode'] == 'raw':
+                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+            elif self.info_dict['cocos_cls_mode'] == 'both':
+                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
+                                        self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels))
+            else:
+                raise ValueError("Unexpected cls_mode parameter: {}".format(self.info_dict['cls_mode']))
             _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
             # CoCoS Contrastive Loss

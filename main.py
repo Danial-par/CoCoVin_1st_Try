@@ -137,6 +137,8 @@ if __name__ == '__main__':
     parser.add_argument("--emb_hid_dim", type=int, default=64,
                         help="the hidden dimension of the hidden layers in the MLP discriminator")
     parser.add_argument('--beta', type=float, default=0.6, help='weight for cocos contrastive loss')
+    parser.add_argument("--cocos_cls_mode", type=str, default='both',
+                        help="the type of the classification loss")
 
     # extra added arguements
     parser.add_argument("--seed", type=int, default=0,
