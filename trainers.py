@@ -268,15 +268,6 @@ class ViolinTrainer(BaseTrainer):
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
             (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
 
-            # Store metrics for plotting
-            self.tr_loss_history.append(tr_loss_epoch)
-            self.tr_acc_history.append(tr_acc)
-            self.val_loss_history.append(val_loss_epoch)
-            self.val_acc_history.append(val_acc_epoch)
-            self.tt_loss_history.append(tt_loss_epoch)
-            self.tt_acc_history.append(tt_acc_epoch)
-            # =====================
-
             if val_acc_epoch > self.best_val_acc:
                 self.best_val_acc = val_acc_epoch
                 self.best_tt_acc = tt_acc_epoch
@@ -293,21 +284,8 @@ class ViolinTrainer(BaseTrainer):
             if i % 50 == 0:
                 print(
                     f"Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
-            # if i % self.info_dict['eta'] == 0:
-            #     print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
-            #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
 
-        # Package the history data to be returned
-        history = {
-            'tr_acc': self.tr_acc_history,
-            'val_acc': self.val_acc_history,
-            'tt_acc': self.tt_acc_history,
-            'tr_loss': self.tr_loss_history,
-            'val_loss': self.val_loss_history,
-            'tt_loss': self.tt_loss_history,
-        }
-
-        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1, history
+        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
     def train_epoch(self, epoch_i):
         # training sample indices and labels, for the supervised loss
@@ -361,16 +339,9 @@ class ViolinTrainer(BaseTrainer):
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
             epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
-        # toc = time.time()
-        # if epoch_i % 10 == 0:
-        #     print("Epoch {} | Loss: {:.4f} | training accuracy: {:.4f}".format(epoch_i, epoch_loss.cpu().item(), epoch_acc))
-        #     print("cls loss: {:.4f} | consistent loss: {:.4f} | vl loss: {:.4f} ".format(epoch_cls_loss.cpu().item(), epoch_con_loss.cpu().item(), epoch_vl_loss.cpu().item()))
-        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(epoch_micro_f1, epoch_macro_f1))
-        #     print('Elapse time: {:.4f}s'.format(toc - tic))
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
     def eval_epoch(self, epoch_i):
-        tic = time.time()
         self.model.eval()
         val_labels = self.val_y.to(self.info_dict['device'])
         tt_labels = self.tt_y.to(self.info_dict['device'])
@@ -391,36 +362,8 @@ class ViolinTrainer(BaseTrainer):
             tt_epoch_micro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="micro")
             tt_epoch_macro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="macro")
 
-        # toc = time.time()
-        # if epoch_i % 10 == 0:
-        #     print("Epoch {} | validation loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(), val_epoch_acc))
-        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
-        #     print("Epoch {} | test loss: {:.4f} | testing accuracy: {:.4f}".format(epoch_i, tt_epoch_loss.cpu().item(), tt_epoch_acc))
-        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(tt_epoch_micro_f1, tt_epoch_macro_f1))
-        #     print('Elapse time: {:.4f}s'.format(toc - tic))
         return (val_epoch_loss.cpu().item(), val_epoch_acc, val_epoch_micro_f1, val_epoch_macro_f1), \
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
-
-    def add_label_noise(self, pred_labels, pred_conf, noise_ratio=0.1):
-        """Add noise to predicted labels to prevent overfitting"""
-        num_nodes = len(pred_labels)
-        noise_mask = torch.rand(num_nodes, device=self.info_dict['device']) < noise_ratio
-
-        if noise_mask.sum() > 0:
-            with torch.no_grad():
-                x_data = self.g.x.to(self.info_dict['device'])
-                edge_index = self.ori_edge_index.to(self.info_dict['device'])
-                logits = self.model(x_data, edge_index)
-                prob = torch.softmax(logits, dim=1)
-
-                # Get second-most likely class for each node
-                _, top_indices = torch.topk(prob, k=2, dim=1)
-                second_best = top_indices[:, 1]
-
-                # Apply label noise: use second-most likely class
-                pred_labels[noise_mask] = second_best[noise_mask]
-
-        return pred_labels
 
     def get_pred_labels(self):
 
@@ -440,9 +383,6 @@ class ViolinTrainer(BaseTrainer):
             # for training nodes, the estimated labels will be replaced by their ground-truth labels
             self.pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
             self.pred_conf = conf
-
-            # Add label noise to predicted labels
-            self.pred_labels = self.add_label_noise(self.pred_labels, self.pred_conf, noise_ratio=0.25)
 
             pretr_val_acc = torch.sum(preds[self.val_nid].cpu() == self.labels[self.val_nid]).item() * 1.0 / \
                             self.labels[self.val_nid].shape[0]
@@ -526,14 +466,6 @@ class CoCoVinTrainer(BaseTrainer):
                                      {'params': self.Dis.parameters()}],
                                     lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
 
-        # Attributes for tracking training history
-        self.tr_loss_history = []
-        self.tr_acc_history = []
-        self.val_loss_history = []
-        self.val_acc_history = []
-        self.tt_loss_history = []
-        self.tt_acc_history = []
-
         # Add phase tracking for sequential training
         self.phase1_epochs = self.info_dict['n_epochs'] // 3  # First 1/3 for CoCoS only
 
@@ -542,7 +474,10 @@ class CoCoVinTrainer(BaseTrainer):
 
     def train(self):
         for i in range(self.info_dict['n_epochs']):
-            if i % self.info_dict['eta'] == 0:
+            if i < self.phase1_epochs and i % self.info_dict['eta'] == 0:
+                self.get_pred_labels()
+
+            elif i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
                     self.get_pred_labels()
                 self.add_VOs()
@@ -550,16 +485,6 @@ class CoCoVinTrainer(BaseTrainer):
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
             (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
-
-            # === ADD THIS PART ===
-            # Store metrics for plotting
-            self.tr_loss_history.append(tr_loss_epoch)
-            self.tr_acc_history.append(tr_acc)
-            self.val_loss_history.append(val_loss_epoch)
-            self.val_acc_history.append(val_acc_epoch)
-            self.tt_loss_history.append(tt_loss_epoch)
-            self.tt_acc_history.append(tt_acc_epoch)
-            # =====================
 
             if val_acc_epoch > self.best_val_acc:
                 self.best_val_acc = val_acc_epoch
@@ -577,37 +502,19 @@ class CoCoVinTrainer(BaseTrainer):
                 print(
                     f"Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
 
-            # if i % self.info_dict['eta'] == 0:
-            #     print("Training acc: {:.4f}, val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
-            #           .format(tr_acc, val_acc_epoch, tt_acc_epoch, tr_microf1, tr_macrof1))
-            #     print("___________________________________________________________________________________")
-            #     print("Best val acc: {:.4f}, test acc: {:.4f}, micro-F1: {:.4f}, macro-F1: {:.4f}\n"
-            #           .format(self.best_val_acc, self.best_tt_acc, self.best_microf1, self.best_macrof1))
-
-        # Package the history data to be returned
-        history = {
-            'tr_acc': self.tr_acc_history,
-            'val_acc': self.val_acc_history,
-            'tt_acc': self.tt_acc_history,
-            'tr_loss': self.tr_loss_history,
-            'val_loss': self.val_loss_history,
-            'tt_loss': self.tt_loss_history,
-        }
-
-        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1, history
+        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
     def train_epoch(self, epoch_i):
-        if epoch_i % 4 < 2:  # Epochs 0,1,4,5,8,9...
+        if epoch_i < self.phase1_epochs:
+            # Phase 1: CoCoS only - but we need predicted labels first
+            if self.pred_labels is None:
+                self.get_pred_labels()  # Get initial predictions for CoCoS
             return self.train_epoch_cocos_only(epoch_i)
-        else:  # Epochs 2,3,6,7,10,11...
+        else:
+            # Phase 2: Violin only
             return self.train_epoch_violin_only(epoch_i)
 
     def train_epoch_cocos_only(self, epoch_i):
-        # Use clean labels for CoCoS
-        if hasattr(self, 'pred_labels_clean'):
-            current_pred_labels = self.pred_labels
-            self.pred_labels = self.pred_labels_clean  # Switch to clean labels
-
         # Classification + CoCoS contrastive loss only
         cls_nids = self.tr_nid
         cls_labels = self.tr_y.to(self.info_dict['device'])
@@ -621,7 +528,7 @@ class CoCoVinTrainer(BaseTrainer):
             x_data = self.g.x.to(self.info_dict['device'])
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
 
-            # Forward passes for CoCoS - now using clean labels
+            # Forward passes for CoCoS
             ori_logits = self.model(x_data, ori_edge_index)
             shuf_feat = self.shuffle_feat(x_data)
             shuf_logits = self.model(shuf_feat, ori_edge_index)
@@ -655,10 +562,6 @@ class CoCoVinTrainer(BaseTrainer):
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
             epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
-
-        # Restore noisy labels
-        if hasattr(self, 'pred_labels_clean'):
-            self.pred_labels = current_pred_labels
 
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
@@ -708,27 +611,6 @@ class CoCoVinTrainer(BaseTrainer):
             epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
-
-    def add_label_noise(self, pred_labels, pred_conf, noise_ratio=0.1):
-        """Add noise to predicted labels to prevent overfitting"""
-        num_nodes = len(pred_labels)
-        noise_mask = torch.rand(num_nodes, device=self.info_dict['device']) < noise_ratio
-
-        if noise_mask.sum() > 0:
-            with torch.no_grad():
-                x_data = self.g.x.to(self.info_dict['device'])
-                edge_index = self.ori_edge_index.to(self.info_dict['device'])
-                logits = self.model(x_data, edge_index)
-                prob = torch.softmax(logits, dim=1)
-
-                # Get second-most likely class for each node
-                _, top_indices = torch.topk(prob, k=2, dim=1)
-                second_best = top_indices[:, 1]
-
-                # Apply label noise: use second-most likely class
-                pred_labels[noise_mask] = second_best[noise_mask]
-
-        return pred_labels
 
     # --- Include all helper methods from ViolinTrainer ---
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
@@ -824,6 +706,7 @@ class CoCoVinTrainer(BaseTrainer):
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
 
     def get_pred_labels(self):
+
         # load the pretrained model and use it to estimate the labels
         cur_model_state_dict = deepcopy(self.model.state_dict())
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -836,18 +719,9 @@ class CoCoVinTrainer(BaseTrainer):
 
             _, preds = torch.max(logits, dim=1)
             conf = torch.softmax(logits, dim=1).max(dim=1)[0]
-
-            # Store clean predictions for CoCoS
-            clean_pred_labels = preds.clone()
-            clean_pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
-            self.pred_labels_clean = clean_pred_labels  # Clean version for CoCoS
-
-            # Store noisy predictions for Violin
-            noisy_pred_labels = preds.clone()
-            noisy_pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
-            noisy_pred_labels = self.add_label_noise(noisy_pred_labels, conf, noise_ratio=0.1)
-            self.pred_labels = noisy_pred_labels  # Noisy version for Violin
-
+            self.pred_labels = preds
+            # for training nodes, the estimated labels will be replaced by their ground-truth labels
+            self.pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
             self.pred_conf = conf
 
             pretr_val_acc = torch.sum(preds[self.val_nid].cpu() == self.labels[self.val_nid]).item() * 1.0 / \
@@ -860,13 +734,6 @@ class CoCoVinTrainer(BaseTrainer):
         # reload the current model's parameters
         self.model.load_state_dict(cur_model_state_dict)
         self.pred_label_flag = False
-
-    def set_labels_for_method(self, use_clean=True):
-        """Switch between clean and noisy labels"""
-        if use_clean and hasattr(self, 'pred_labels_clean'):
-            self.pred_labels = self.pred_labels_clean
-        elif hasattr(self, 'pred_labels_noisy'):
-            self.pred_labels = self.pred_labels_noisy
 
     def set_conf_thrs(self, preds, conf, nids):
 
