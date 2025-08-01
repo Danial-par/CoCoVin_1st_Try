@@ -25,7 +25,7 @@ class GCN(nn.Module):
         for i in range(info_dict['n_layers']):
             in_dim = info_dict['hid_dim'] if i > 0 else info_dict['in_dim']
             out_dim = info_dict['hid_dim'] if i < info_dict['n_layers'] - 1 else info_dict['out_dim']
-            bias = i == info_dict['n_layers'] - 1
+            bias = True  # Changed: Enable bias for all layers
             bn = False if i == (info_dict['n_layers'] - 1) else info_dict['bn']
 
             self.enc.append(GCNConv(in_dim, out_dim, bias=bias))
@@ -43,7 +43,6 @@ class GCN(nn.Module):
         for i in range(self.n_layers):
             h = self.enc[i](x, edge_index)
             if virt_edge_index is not None:
-                # compute virtual link features
                 vh = self.enc[i](x, virt_edge_index)
                 if self.info_dict['virt_agg'] == 'max':
                     h = torch.maximum(h, vh)
