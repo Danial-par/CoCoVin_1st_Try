@@ -98,7 +98,7 @@ def main(args):
         else:
             # Default case
             model = getattr(models, args.model)(info_dict)
-        
+
         # Initialize trainer
         if args.model in backbone_list:
             if args.dataset == 'ogbn-arxiv':

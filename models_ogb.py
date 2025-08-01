@@ -460,3 +460,38 @@ class GIN(nn.Module):
 class ViolinGIN(GIN):
     def __init__(self, info_dict):
         super().__init__(info_dict)
+
+
+class DisMLP(nn.Module):
+    def __init__(self, info_dict):
+        super(DisMLP, self).__init__()
+        self.info_dict = info_dict
+
+        # Get dimensions
+        in_dim = info_dict['hid_dim']
+        hid_dim = info_dict.get('emb_hid_dim', 64)
+        n_layers = info_dict.get('dis_layers', 2)
+        dropout = info_dict.get('dropout', 0.5)
+
+        # Build MLP layers
+        layers = []
+
+        # First layer
+        layers.append(nn.Linear(in_dim, hid_dim))
+        layers.append(nn.ReLU())
+        layers.append(nn.Dropout(dropout))
+
+        # Hidden layers
+        for _ in range(n_layers - 2):
+            layers.append(nn.Linear(hid_dim, hid_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+
+        # Output layer
+        layers.append(nn.Linear(hid_dim, 1))
+        layers.append(nn.Sigmoid())
+
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.mlp(x)
