@@ -78,7 +78,7 @@ def main(args):
         print(model)
         print('\nSTART TRAINING\n')
         tic = time.time()
-        val_acc, tt_acc, val_acc_fin, tt_acc_fin, microf1, macrof1, history = trainer.train()
+        val_acc, tt_acc, val_acc_fin, tt_acc_fin, microf1, macrof1 = trainer.train()
         toc = time.time()
 
         # Save the results for the current round
