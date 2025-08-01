@@ -85,10 +85,21 @@ def main(args):
 
         args.seed = args.seed + 1
 
-        # initialize a model
-        model = getattr(models, args.model)(info_dict) if args.dataset != 'ogbn-arxiv' else getattr(models_ogb, args.model)(info_dict)
-        # initialize a trainer
+        # Define backbone models that have OGB versions
         backbone_list = ['GCN', 'GAT', 'SAGE', 'JKNet', 'GCN2', 'APPNPNet', 'GIN', 'SGC']
+
+        # Initialize model
+        if args.model in backbone_list:
+            # For pure backbone models, use OGB version if needed
+            model = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, args.model)(info_dict)
+        elif args.model.startswith('CoCoVin') or args.model.startswith('Violin'):
+            # For composite models, always use regular models module
+            model = getattr(models, args.model)(info_dict)
+        else:
+            # Default case
+            model = getattr(models, args.model)(info_dict)
+        
+        # Initialize trainer
         if args.model in backbone_list:
             if args.dataset == 'ogbn-arxiv':
                 trainer = getattr(trainers, 'BaseArxivTrainer')(g, model, info_dict)
