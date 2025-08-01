@@ -39,29 +39,11 @@ class BaseTrainer(object):
         self.best_microf1 = 0
         self.best_macrof1 = 0
 
-        # Attributes for tracking training history
-        self.tr_loss_history = []
-        self.tr_acc_history = []
-        self.val_loss_history = []
-        self.val_acc_history = []
-        self.tt_loss_history = []
-        self.tt_acc_history = []
-
     def train(self):
         for i in range(self.info_dict['n_epochs']):
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
             (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
-
-            # === ADD THIS PART ===
-            # Store metrics for plotting
-            self.tr_loss_history.append(tr_loss_epoch)
-            self.tr_acc_history.append(tr_acc)
-            self.val_loss_history.append(val_loss_epoch)
-            self.val_acc_history.append(val_acc_epoch)
-            self.tt_loss_history.append(tt_loss_epoch)
-            self.tt_acc_history.append(tt_acc_epoch)
-            # =====================
 
             if val_acc_epoch > self.best_val_acc:
                 self.best_val_acc = val_acc_epoch
@@ -77,17 +59,7 @@ class BaseTrainer(object):
         # save the model in the final epoch
         _ = self.save_model(self.model, self.info_dict, state='fin')
 
-        # Package the history data to be returned
-        history = {
-            'tr_acc': self.tr_acc_history,
-            'val_acc': self.val_acc_history,
-            'tt_acc': self.tt_acc_history,
-            'tr_loss': self.tr_loss_history,
-            'val_loss': self.val_loss_history,
-            'tt_loss': self.tt_loss_history,
-        }
-
-        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1, history
+        return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
     def train_epoch(self, epoch_i):
         # training sample indices and labels
@@ -120,7 +92,6 @@ class BaseTrainer(object):
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
     def eval_epoch(self, epoch_i):
-        # tic = time.time()
         self.model.eval()
         val_labels = self.val_y.to(self.info_dict['device'])
         tt_labels = self.tt_y.to(self.info_dict['device'])
@@ -141,15 +112,6 @@ class BaseTrainer(object):
             tt_epoch_micro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="micro")
             tt_epoch_macro_f1 = metrics.f1_score(tt_labels.cpu().numpy(), tt_preds.cpu().numpy(), average="macro")
 
-        # toc = time.time()
-        # if epoch_i % 10 == 0:
-        #     print("Epoch {} | Loss: {:.4f} | validation accuracy: {:.4f}".format(epoch_i, val_epoch_loss.cpu().item(),
-        #                                                                          val_epoch_acc))
-        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(val_epoch_micro_f1, val_epoch_macro_f1))
-        #     print("Epoch {} | Loss: {:.4f} | testing accuracy: {:.4f}".format(epoch_i, tt_epoch_loss.cpu().item(),
-        #                                                                          tt_epoch_acc))
-        #     print("Micro-F1: {:.4f} | Macro-F1: {:.4f}".format(tt_epoch_micro_f1, tt_epoch_macro_f1))
-        #     print('Elapse time: {:.4f}s'.format(toc - tic))
         return (val_epoch_loss.cpu().item(), val_epoch_acc, val_epoch_micro_f1, val_epoch_macro_f1), \
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
 
