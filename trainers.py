@@ -1028,10 +1028,11 @@ class CoCoVinArxivTrainer(CoCoVinTrainer):
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
             logits = self.model(x_data, ori_edge_index)
 
-            # Test results only (to match expected return format)
+            # Fix: Ensure both tensors have the same shape
             test_pred = logits[self.test_idx].argmax(dim=-1, keepdim=True)
-            test_true = self.g.y[self.test_idx]
+            test_true = self.g.y[self.test_idx].view(-1, 1)  # Ensure 2D shape [n_test, 1]
+
             test_acc = self.evaluator.eval({'y_true': test_true, 'y_pred': test_pred})['acc']
-            test_loss = self.crs_entropy_fn(logits[self.test_idx], test_true.squeeze())
+            test_loss = self.crs_entropy_fn(logits[self.test_idx], self.g.y[self.test_idx].squeeze())
 
         return test_loss.item(), test_acc, test_acc, test_acc
