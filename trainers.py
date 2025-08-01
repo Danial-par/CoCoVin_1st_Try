@@ -27,7 +27,7 @@ class BaseTrainer(object):
         self.tr_nid = g.train_mask.nonzero().squeeze()
         self.val_nid = g.val_mask.nonzero().squeeze()
         self.tt_nid = g.test_mask.nonzero().squeeze()
-        self.labels = g.y
+        self.labels = g.y.squeeze()
         self.tr_y = self.labels[self.tr_nid]
         self.val_y = self.labels[self.val_nid]
         self.tt_y = self.labels[self.tt_nid]
@@ -66,7 +66,7 @@ class BaseTrainer(object):
     def train_epoch(self, epoch_i):
         # training sample indices and labels
         nids = self.tr_nid
-        labels = self.tr_y
+        labels = self.tr_y.squeeze()
 
         tic = time.time()
         self.model.train()
@@ -95,8 +95,8 @@ class BaseTrainer(object):
 
     def eval_epoch(self, epoch_i):
         self.model.eval()
-        val_labels = self.val_y.to(self.info_dict['device'])
-        tt_labels = self.tt_y.to(self.info_dict['device'])
+        val_labels = self.val_y.squeeze().to(self.info_dict['device'])
+        tt_labels = self.tt_y.squeeze().to(self.info_dict['device'])
         with torch.set_grad_enabled(False):
             x_data = self.g.x.to(self.info_dict['device'])
             edge_index = self.g.edge_index.to(self.info_dict['device'])

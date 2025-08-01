@@ -44,6 +44,9 @@ def load_data(db, db_dir='./dataset'):
         g.val_mask = torch.zeros(num_nodes, dtype=torch.bool)
         g.test_mask = torch.zeros(num_nodes, dtype=torch.bool)
 
+        # Ensure labels are properly shaped
+        g.y = g.y.squeeze()
+
         g.train_mask[train_idx] = True
         g.val_mask[val_idx] = True
         g.test_mask[test_idx] = True
