@@ -136,6 +136,40 @@ class BaseArxivTrainer(BaseTrainer):
     def __init__(self, g, model, info_dict):
         super().__init__(g, model, info_dict)
         self.evaluator = Evaluator(name='ogbn-arxiv')
+        # Store train_idx for batch sampling
+        self.train_idx = g.train_idx
+
+    def train_epoch(self, epoch_i):
+        self.model.train()
+
+        # Implement proper batch sampling
+        batch_size = min(512, len(self.train_idx))
+        idx = torch.randperm(len(self.train_idx))[:batch_size]  # Random sampling
+        batch_nodes = self.train_idx[idx]
+
+        labels = self.g.y[batch_nodes].squeeze().to(self.info_dict['device'])
+
+        with torch.set_grad_enabled(True):
+            x_data = self.g.x.to(self.info_dict['device'])
+            edge_index = self.g.edge_index.to(self.info_dict['device'])
+            logits = self.model(x_data, edge_index)
+
+            loss = self.crs_entropy_fn(logits[batch_nodes], labels)
+
+            self.opt.zero_grad()
+            loss.backward()
+            self.opt.step()
+
+            preds = logits[batch_nodes].argmax(dim=-1)
+            acc = self.evaluator.eval({
+                'y_true': labels.unsqueeze(-1),
+                'y_pred': preds.unsqueeze(-1)
+            })['acc']
+
+        if epoch_i % 10 == 0:
+            print(f"Epoch {epoch_i:03d} | Loss: {loss.item():.4f} | Train Acc: {acc:.4f}")
+
+        return loss.item(), acc, acc, acc  # Return the same acc for micro/macro F1
 
     def eval_model(self, model, mask_name='val'):
         model.eval()
@@ -909,7 +943,9 @@ class CoCoVinArxivTrainer(CoCoVinTrainer):
     def train_epoch_cocos_only(self, epoch_i):
         # Use batch training for memory efficiency but follow parent logic
         batch_size = min(512, len(self.train_idx))
-        cls_nids = self.train_idx[:batch_size]
+        # Randomly sample different nodes each epoch
+        idx = torch.randperm(len(self.train_idx))[:batch_size]
+        cls_nids = self.train_idx[idx]
         cls_labels = self.g.y[cls_nids].squeeze().to(self.info_dict['device'])
         ctr_nids = torch.cat((self.val_idx[:256], self.test_idx[:256]))
         ctr_labels_pos = torch.ones(len(ctr_nids), 1, device=self.info_dict['device']).float()
@@ -973,7 +1009,9 @@ class CoCoVinArxivTrainer(CoCoVinTrainer):
     def train_epoch_violin_only(self, epoch_i):
         # Follow parent Violin logic exactly with batching
         batch_size = min(512, len(self.train_idx))
-        cls_nids = self.train_idx[:batch_size]
+        # Randomly sample different nodes each epoch
+        idx = torch.randperm(len(self.train_idx))[:batch_size]
+        cls_nids = self.train_idx[idx]
         cls_labels = self.g.y[cls_nids].squeeze().to(self.info_dict['device'])
         con_nids = torch.cat((self.val_idx[:256], self.test_idx[:256]))
 
