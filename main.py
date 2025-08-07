@@ -109,10 +109,7 @@ def main(args):
             info_dict.update({'backbone': args.model[7:]})
             Dis = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, 'DisMLP')(info_dict)
             Dis.to(info_dict['device'])
-            if args.dataset == 'ogbn-arxiv':
-                trainer = getattr(trainers, 'CoCoVinArxivTrainer')(g, model, info_dict, Dis=Dis)
-            else:
-                trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis)
+            trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis)
         elif args.model.startswith('Violin'):
             info_dict.update({'backbone': args.model[6:]})
             if args.dataset == 'ogbn-arxiv':
