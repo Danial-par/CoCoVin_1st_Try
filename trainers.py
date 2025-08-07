@@ -176,29 +176,40 @@ class BaseArxivTrainer(BaseTrainer):
         with torch.no_grad():
             x_data = self.g.x.to(self.info_dict['device'])
             edge_index = self.g.edge_index.to(self.info_dict['device'])
+            # Move labels to the same device
+            labels = self.g.y.to(self.info_dict['device'])
+
             logits = self.model(x_data, edge_index)
 
             # Validation evaluation
-            val_pred = logits[self.g.val_idx].argmax(dim=-1, keepdim=True)
-            val_true = self.g.y[self.g.val_idx]
-            val_loss = self.crs_entropy_fn(logits[self.g.val_idx], val_true.squeeze())
+            val_idx = self.g.val_idx.to(self.info_dict['device'])
+            val_pred = logits[val_idx].argmax(dim=-1, keepdim=True)
+            val_true = labels[val_idx]
+            val_loss = self.crs_entropy_fn(logits[val_idx], val_true.squeeze())
+
+            # For evaluator, make sure tensors are on the correct device
+            val_pred_cpu = val_pred.cpu()
+            val_true_cpu = val_true.cpu()
             val_acc = self.evaluator.eval({
-                'y_true': val_true,
-                'y_pred': val_pred
+                'y_true': val_true_cpu,
+                'y_pred': val_pred_cpu
             })['acc']
 
             # Test evaluation
-            test_pred = logits[self.g.test_idx].argmax(dim=-1, keepdim=True)
-            test_true = self.g.y[self.g.test_idx]
-            test_loss = self.crs_entropy_fn(logits[self.g.test_idx], test_true.squeeze())
+            test_idx = self.g.test_idx.to(self.info_dict['device'])
+            test_pred = logits[test_idx].argmax(dim=-1, keepdim=True)
+            test_true = labels[test_idx]
+            test_loss = self.crs_entropy_fn(logits[test_idx], test_true.squeeze())
+
+            test_pred_cpu = test_pred.cpu()
+            test_true_cpu = test_true.cpu()
             test_acc = self.evaluator.eval({
-                'y_true': test_true,
-                'y_pred': test_pred
+                'y_true': test_true_cpu,
+                'y_pred': test_pred_cpu
             })['acc']
 
         # Return values in the expected format
         return (val_loss.item(), val_acc, val_acc, val_acc), (test_loss.item(), test_acc, test_acc, test_acc)
-
 
 class ViolinTrainer(BaseTrainer):
     def __init__(self, g, model, info_dict, *args, **kwargs):
