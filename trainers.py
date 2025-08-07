@@ -176,7 +176,6 @@ class BaseArxivTrainer(BaseTrainer):
         with torch.no_grad():
             x_data = self.g.x.to(self.info_dict['device'])
             edge_index = self.g.edge_index.to(self.info_dict['device'])
-            # Move labels to the same device
             labels = self.g.y.to(self.info_dict['device'])
 
             logits = self.model(x_data, edge_index)
@@ -187,9 +186,9 @@ class BaseArxivTrainer(BaseTrainer):
             val_true = labels[val_idx]
             val_loss = self.crs_entropy_fn(logits[val_idx], val_true.squeeze())
 
-            # For evaluator, make sure tensors are on the correct device
-            val_pred_cpu = val_pred.cpu()
-            val_true_cpu = val_true.cpu()
+            # Reshape to 2D for OGB evaluator
+            val_pred_cpu = val_pred.cpu().view(-1, 1)  # Make 2D
+            val_true_cpu = val_true.cpu().view(-1, 1)  # Make 2D
             val_acc = self.evaluator.eval({
                 'y_true': val_true_cpu,
                 'y_pred': val_pred_cpu
@@ -201,15 +200,21 @@ class BaseArxivTrainer(BaseTrainer):
             test_true = labels[test_idx]
             test_loss = self.crs_entropy_fn(logits[test_idx], test_true.squeeze())
 
-            test_pred_cpu = test_pred.cpu()
-            test_true_cpu = test_true.cpu()
+            # Reshape to 2D for OGB evaluator
+            test_pred_cpu = test_pred.cpu().view(-1, 1)  # Make 2D
+            test_true_cpu = test_true.cpu().view(-1, 1)  # Make 2D
             test_acc = self.evaluator.eval({
                 'y_true': test_true_cpu,
                 'y_pred': test_pred_cpu
             })['acc']
 
-        # Return values in the expected format
-        return (val_loss.item(), val_acc, val_acc, val_acc), (test_loss.item(), test_acc, test_acc, test_acc)
+            # Calculate micro-F1 and macro-F1
+            test_micro_f1 = test_acc  # For node classification, micro-F1 equals accuracy
+            test_pred_np = test_pred.cpu().numpy()
+            test_true_np = test_true.cpu().numpy()
+            test_macro_f1 = metrics.f1_score(test_true_np, test_pred_np, average='macro')
+
+        return (val_loss.item(), val_acc, val_acc, val_acc), (test_loss.item(), test_acc, test_micro_f1, test_macro_f1)
 
 class ViolinTrainer(BaseTrainer):
     def __init__(self, g, model, info_dict, *args, **kwargs):
