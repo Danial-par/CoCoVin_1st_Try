@@ -171,27 +171,33 @@ class BaseArxivTrainer(BaseTrainer):
 
         return loss.item(), acc, acc, acc  # Return the same acc for micro/macro F1
 
-    def eval_model(self, model, mask_name='val'):
-        model.eval()
+    def eval_epoch(self, epoch_i):
+        self.model.eval()
         with torch.no_grad():
-            logits = model(self.g.x, self.g.edge_index)
+            x_data = self.g.x.to(self.info_dict['device'])
+            edge_index = self.g.edge_index.to(self.info_dict['device'])
+            logits = self.model(x_data, edge_index)
 
-            if mask_name == 'val':
-                mask = self.g.val_idx
-            elif mask_name == 'test':
-                mask = self.g.test_idx
-            else:
-                mask = self.g.train_idx
-
-            pred = logits[mask].argmax(dim=-1, keepdim=True)
-            true = self.g.y[mask]
-
-            acc = self.evaluator.eval({
-                'y_true': true,
-                'y_pred': pred
+            # Validation evaluation
+            val_pred = logits[self.g.val_idx].argmax(dim=-1, keepdim=True)
+            val_true = self.g.y[self.g.val_idx]
+            val_loss = self.crs_entropy_fn(logits[self.g.val_idx], val_true.squeeze())
+            val_acc = self.evaluator.eval({
+                'y_true': val_true,
+                'y_pred': val_pred
             })['acc']
 
-        return acc
+            # Test evaluation
+            test_pred = logits[self.g.test_idx].argmax(dim=-1, keepdim=True)
+            test_true = self.g.y[self.g.test_idx]
+            test_loss = self.crs_entropy_fn(logits[self.g.test_idx], test_true.squeeze())
+            test_acc = self.evaluator.eval({
+                'y_true': test_true,
+                'y_pred': test_pred
+            })['acc']
+
+        # Return values in the expected format
+        return (val_loss.item(), val_acc, val_acc, val_acc), (test_loss.item(), test_acc, test_acc, test_acc)
 
 
 class ViolinTrainer(BaseTrainer):
