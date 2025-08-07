@@ -38,6 +38,13 @@ def load_data(db, db_dir='./dataset'):
         val_idx = split_idx['valid']
         test_idx = split_idx['test']
 
+        # Add reverse edges to make the graph undirected
+        edge_index = g.edge_index
+        reverse_edge_index = torch.stack([edge_index[1], edge_index[0]], dim=0)
+        edge_index = torch.cat([edge_index, reverse_edge_index], dim=1)
+        # Remove duplicate edges
+        g.edge_index = pyg.utils.coalesce(edge_index)
+
         # Create boolean masks (standard format)
         num_nodes = g.num_nodes
         g.train_mask = torch.zeros(num_nodes, dtype=torch.bool)
