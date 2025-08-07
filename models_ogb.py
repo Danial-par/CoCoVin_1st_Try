@@ -463,34 +463,24 @@ class ViolinGIN(GIN):
 
 class DisMLP(nn.Module):
     def __init__(self, info_dict):
-        super(DisMLP, self).__init__()
+        super().__init__()
         self.info_dict = info_dict
+        self.mlp = nn.ModuleList()
 
-        # Get dimensions
-        in_dim = info_dict['hid_dim']
-        hid_dim = info_dict.get('emb_hid_dim', 64)
-        n_layers = info_dict.get('dis_layers', 2)
-        dropout = info_dict.get('dropout', 0.5)
+        for i in range(info_dict['dis_layers']):
+            # Fix: Use 2 * hid_dim instead of 2 * out_dim
+            input_dim = 2 * info_dict['hid_dim'] if i == 0 else info_dict['emb_hid_dim']
+            hidden_dim = 1 if i == (info_dict['dis_layers'] - 1) else info_dict['emb_hid_dim']
+            act = False if i == (info_dict['dis_layers'] - 1) else True
+            BN = False if i == (info_dict['dis_layers'] - 1) else info_dict['bn']
+            self.mlp.append(LinearBlock(input_dim, hidden_dim, info_dict['dropout'], bn=BN, act=act))
 
-        # Build MLP layers
-        layers = []
+    def forward(self, feat):
+        h = feat
+        for layer in self.mlp:
+            h = layer(h)
+        return h
 
-        # First layer
-        layers.append(nn.Linear(in_dim, hid_dim))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(dropout))
-
-        # Hidden layers
-        for _ in range(n_layers - 2):
-            layers.append(nn.Linear(hid_dim, hid_dim))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
-
-        # Output layer
-        layers.append(nn.Linear(hid_dim, 1))
-        layers.append(nn.Sigmoid())
-
-        self.mlp = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.mlp(x)
+    def reset_param(self):
+        for layer in self.mlp:
+            layer.reset_parameters()
