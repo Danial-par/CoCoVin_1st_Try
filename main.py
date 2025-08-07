@@ -104,10 +104,7 @@ def main(args):
 
         # Initialize trainer
         if args.model in backbone_list:
-            if args.dataset == 'ogbn-arxiv':
-                trainer = getattr(trainers, 'BaseArxivTrainer')(g, model, info_dict)
-            else:
-                trainer = getattr(trainers, 'BaseTrainer')(g, model, info_dict)
+            trainer = getattr(trainers, 'BaseTrainer')(g, model, info_dict)
         elif args.model.startswith('CoCoVin'):
             info_dict.update({'backbone': args.model[7:]})
             Dis = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, 'DisMLP')(info_dict)
