@@ -183,7 +183,7 @@ class BaseArxivTrainer(BaseTrainer):
 
             # Validation evaluation
             val_idx = self.g.val_idx.to(self.info_dict['device'])
-            val_pred = logits[val_idx].argmax(dim=-1, keepdim=True)
+            val_pred = logits[val_idx].argmax(dim=-1, keepdim=False)
             val_true = labels[val_idx]
             val_loss = self.crs_entropy_fn(logits[val_idx], val_true.squeeze())
 
@@ -197,7 +197,7 @@ class BaseArxivTrainer(BaseTrainer):
 
             # Test evaluation
             test_idx = self.g.test_idx.to(self.info_dict['device'])
-            test_pred = logits[test_idx].argmax(dim=-1, keepdim=True)
+            test_pred = logits[test_idx].argmax(dim=-1, keepdim=False)
             test_true = labels[test_idx]
             test_loss = self.crs_entropy_fn(logits[test_idx], test_true.squeeze())
 
