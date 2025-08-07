@@ -112,10 +112,7 @@ def main(args):
             trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis)
         elif args.model.startswith('Violin'):
             info_dict.update({'backbone': args.model[6:]})
-            if args.dataset == 'ogbn-arxiv':
-                trainer = getattr(trainers, 'ViolinArxivTrainer')(g, model, info_dict)
-            else:
-                trainer = getattr(trainers, 'ViolinTrainer')(g, model, info_dict)
+            trainer = getattr(trainers, 'ViolinTrainer')(g, model, info_dict)
         else:
             raise ValueError('Unknown model: {}'.format(args.model))
 

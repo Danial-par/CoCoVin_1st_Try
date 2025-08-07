@@ -543,6 +543,10 @@ class CoCoVinTrainer(BaseTrainer):
         cls_labels = self.tr_y.to(self.info_dict['device'])
         con_nids = torch.cat((self.val_nid, self.tt_nid))
 
+        # Clear CUDA cache at the beginning
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         self.model.train()
         with torch.set_grad_enabled(True):
             x_data = self.g.x.to(self.info_dict['device'])
@@ -550,8 +554,16 @@ class CoCoVinTrainer(BaseTrainer):
             aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
             virt_edge_index = self.virt_edge_index.to(self.info_dict['device'])
 
+            # Process original graph first
             ori_logits = self.model(x_data, ori_edge_index)
             ori_conf = torch.softmax(ori_logits, dim=1)
+
+            # Clear intermediate variables to free memory
+            del ori_logits
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Process augmented graph
             aug_logits = self.model(x_data, aug_edge_index)
             aug_conf = torch.softmax(aug_logits, dim=1)
 
@@ -560,16 +572,20 @@ class CoCoVinTrainer(BaseTrainer):
             num_unq_vls = virt_edge_index.shape[1] // 2
             epoch_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] - aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
 
-            # Classification loss
+            # Classification loss - recompute logits only when needed
             if self.info_dict['cls_mode'] == 'ori':
-                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
-                _, preds = torch.max(ori_logits[cls_nids], dim=1)
+                ori_logits_cls = self.model(x_data, ori_edge_index)
+                epoch_cls_loss = self.crs_entropy_fn(ori_logits_cls[cls_nids], cls_labels)
+                _, preds = torch.max(ori_logits_cls[cls_nids], dim=1)
+                del ori_logits_cls
             elif self.info_dict['cls_mode'] == 'virt':
                 epoch_cls_loss = self.crs_entropy_fn(aug_logits[cls_nids], cls_labels)
                 _, preds = torch.max(aug_logits[cls_nids], dim=1)
             elif self.info_dict['cls_mode'] == 'both':
-                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) + self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
-                _, preds = torch.max((ori_logits + aug_logits)[cls_nids], dim=1)
+                ori_logits_cls = self.model(x_data, ori_edge_index)
+                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits_cls[cls_nids], cls_labels) + self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
+                _, preds = torch.max((ori_logits_cls + aug_logits)[cls_nids], dim=1)
+                del ori_logits_cls
 
             # Total loss: classification + Violin only
             epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss
@@ -581,6 +597,10 @@ class CoCoVinTrainer(BaseTrainer):
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
             epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
+
+            # Final cleanup
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
