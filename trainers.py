@@ -491,14 +491,31 @@ class CoCoVinTrainer(BaseTrainer):
             x_data = self.g.x.to(self.info_dict['device'])
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
 
-            # Get hidden representations (not final logits)
-            ori_hidden = self.model.get_embeddings(x_data, ori_edge_index)  # Use embeddings method
-            shuf_feat = self.shuffle_feat(x_data)
-            shuf_hidden = self.model.get_embeddings(shuf_feat, ori_edge_index)
+            # Get embeddings by forward pass through all layers except the last
+            h = x_data
+            for i, layer in enumerate(self.model.enc[:-1]):  # All layers except the last
+                h = layer(h, ori_edge_index)
+                if i < len(self.model.bns) - 1:
+                    h = self.model.bns[i](h)
+                h = self.model.act(h)
+                h = self.model.dropout(h)
+            ori_hidden = h  # This is the hidden representation (256-dim)
 
-            # Get logits for classification
-            ori_logits = self.model.classifier(ori_hidden)  # Apply final layer
-            shuf_logits = self.model.classifier(shuf_hidden)
+            # Get final logits
+            ori_logits = self.model.enc[-1](ori_hidden, ori_edge_index)
+
+            # Same process for shuffled features
+            shuf_feat = self.shuffle_feat(x_data)
+            h_shuf = shuf_feat
+            for i, layer in enumerate(self.model.enc[:-1]):
+                h_shuf = layer(h_shuf, ori_edge_index)
+                if i < len(self.model.bns) - 1:
+                    h_shuf = self.model.bns[i](h_shuf)
+                h_shuf = self.model.act(h_shuf)
+                h_shuf = self.model.dropout(h_shuf)
+            shuf_hidden = h_shuf
+
+            shuf_logits = self.model.enc[-1](shuf_hidden, ori_edge_index)
 
             tp_shuf_nids = self.shuffle_nids()
             tp_shuf_hidden = shuf_hidden[tp_shuf_nids]
