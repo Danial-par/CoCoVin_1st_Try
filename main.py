@@ -22,46 +22,42 @@ def save_results(history, filename):
     df.to_csv(filename)
     print(f"Results saved to {filename}")
 
+def ogb_prep(db, db_dir):
+    dataset = PygNodePropPredDataset(name=db, root=db_dir)
+    split_idx = dataset.get_idx_split()
+    train_idx, valid_idx, test_idx = split_idx["train"], split_idx["valid"], split_idx["test"]
+
+    # the original graph is a directional graph, we should convert it into a bi-directional graph
+    graph = dataset[0]
+    label = graph.y
+
+    # add reverse edges
+    edge_index = graph.edge_index
+    print(f"Total edges before adding reverse edges: {len(edge_index[0])}")
+    reverse_edge_index = torch.cat([edge_index[1].unsqueeze(0), edge_index[0].unsqueeze(0)], dim=0)
+    edge_index = torch.cat((edge_index, reverse_edge_index), dim=1)
+    # remove duplicate edges
+    edge_index = pyg.utils.coalesce(edge_index)
+    graph.edge_index = edge_index
+    print(f"Total edges after adding reverse edges: {len(edge_index[0])}")
+
+    train_mask = torch.zeros(label.shape[0]).scatter_(0, train_idx, torch.ones(train_idx.shape[0])).bool()
+    valid_mask = torch.zeros(label.shape[0]).scatter_(0, valid_idx, torch.ones(valid_idx.shape[0])).bool()
+    test_mask = torch.zeros(label.shape[0]).scatter_(0, test_idx, torch.ones(test_idx.shape[0])).bool()
+    graph.train_mask = train_mask
+    graph.val_mask = valid_mask
+    graph.test_mask = test_mask
+    graph.y = label.squeeze()
+
+    return graph, dataset.num_classes
+
 def load_data(db, db_dir='./dataset'):
     if db in ['Cora', 'CiteSeer', 'PubMed']:
         data = Planetoid(db_dir, db, transform=transforms.NormalizeFeatures())
         g = data[0]
         out_dim = data.num_classes
     elif db == 'ogbn-arxiv':
-        data = PygNodePropPredDataset(name=db, root=db_dir, transform=transforms.NormalizeFeatures())
-        g = data[0]
-        out_dim = data.num_classes
-
-        # Convert OGB format to standard format
-        split_idx = data.get_idx_split()
-        train_idx = split_idx['train']
-        val_idx = split_idx['valid']
-        test_idx = split_idx['test']
-
-        # Add reverse edges to make the graph undirected
-        edge_index = g.edge_index
-        reverse_edge_index = torch.stack([edge_index[1], edge_index[0]], dim=0)
-        edge_index = torch.cat([edge_index, reverse_edge_index], dim=1)
-        # Remove duplicate edges
-        g.edge_index = pyg.utils.coalesce(edge_index)
-
-        # Create boolean masks (standard format)
-        num_nodes = g.num_nodes
-        g.train_mask = torch.zeros(num_nodes, dtype=torch.bool)
-        g.val_mask = torch.zeros(num_nodes, dtype=torch.bool)
-        g.test_mask = torch.zeros(num_nodes, dtype=torch.bool)
-
-        # Ensure labels are properly shaped
-        g.y = g.y.squeeze()
-
-        g.train_mask[train_idx] = True
-        g.val_mask[val_idx] = True
-        g.test_mask[test_idx] = True
-
-        # Store original indices for OGB evaluation
-        g.train_idx = train_idx
-        g.val_idx = val_idx
-        g.test_idx = test_idx
+        g, out_dim = ogb_prep('ogbn-arxiv', db_dir)
     else:
         raise ValueError('Unknown dataset: {}'.format(db))
 
