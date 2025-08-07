@@ -143,7 +143,7 @@ class BaseArxivTrainer(BaseTrainer):
         self.model.train()
 
         # Implement proper batch sampling
-        batch_size = min(512, len(self.train_idx))
+        batch_size = min(1024, len(self.train_idx))
         idx = torch.randperm(len(self.train_idx))[:batch_size]  # Random sampling
         batch_nodes = self.train_idx[idx]
 
