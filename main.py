@@ -116,24 +116,6 @@ def main(args):
         else:
             raise ValueError('Unknown model: {}'.format(args.model))
 
-        # Assuming this is in main.py where model training happens
-        if args.model.startswith('CoCoVin') and args.tune_hyperparams:
-            # Set flag in info_dict
-            info_dict['tune_hyperparams'] = True
-
-            # First train Phase 1 only
-            trainer = CoCoVinTrainer(g, model, info_dict, Dis=discriminator)
-            trainer.train()  # This will save Phase 1 model and exit
-
-            # Then perform hyperparameter tuning for Phase 2
-            best_params, best_val_acc = tune_violin_hyperparams(g, model, info_dict)
-
-            # Print best parameters
-            print("\nBest Violin hyperparameters found:")
-            for param, value in best_params.items():
-                print(f"  {param}: {value}")
-            print(f"Best validation accuracy: {best_val_acc:.4f}")
-
         model.to(info_dict['device'])
         print(model)
         print('\nSTART TRAINING\n')
