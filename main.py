@@ -73,30 +73,6 @@ def set_seed(seed):
     return
 
 def main(args):
-
-    # For CoCoVin models with tuning
-    if args.model.startswith('CoCoVin') and args.tune:
-        acc_list = []
-        time_cost_list = []
-
-        for i in range(args.round):
-            print(f"\n=== ROUND {i + 1}/{args.round} ===\n")
-            set_seed(args.seed + i)
-
-            tic = time.time()
-            val_acc, tt_acc = run_cocovine_with_tuning(args)
-            toc = time.time()
-
-            acc_list.append(tt_acc)
-            time_cost = toc - tic
-            time_cost_list.append(time_cost)
-            print(f'Round {i + 1} complete. Time cost: {time_cost:.2f}s, Test acc: {tt_acc:.4f}')
-
-        print('\n\n')
-        print(f'The averaged accuracy of {args.round} rounds on {args.dataset} is: {np.mean(acc_list):.4f}')
-        print(f'The averaged time cost of {args.round} rounds is {np.mean(time_cost_list):.4f}s')
-        return
-
     acc_list = []
     time_cost_list = []
 
@@ -140,6 +116,24 @@ def main(args):
         else:
             raise ValueError('Unknown model: {}'.format(args.model))
 
+        # Assuming this is in main.py where model training happens
+        if args.model.startswith('CoCoVin') and args.tune_hyperparams:
+            # Set flag in info_dict
+            info_dict['tune_hyperparams'] = True
+
+            # First train Phase 1 only
+            trainer = CoCoVinTrainer(g, model, info_dict, Dis=discriminator)
+            trainer.train()  # This will save Phase 1 model and exit
+
+            # Then perform hyperparameter tuning for Phase 2
+            best_params, best_val_acc = tune_violin_hyperparams(g, model, info_dict)
+
+            # Print best parameters
+            print("\nBest Violin hyperparameters found:")
+            for param, value in best_params.items():
+                print(f"  {param}: {value}")
+            print(f"Best validation accuracy: {best_val_acc:.4f}")
+
         model.to(info_dict['device'])
         print(model)
         print('\nSTART TRAINING\n')
@@ -152,103 +146,20 @@ def main(args):
         time_cost_list.append(time_cost)
         print('The time cost of the {} round ({} epochs) is: {}.'.format(i, info_dict['n_epochs'], time_cost))
 
+        # Then perform hyperparameter tuning for Phase 2
+        from trainers import tune_violin_hyperparams
+        best_params, best_val_acc = tune_violin_hyperparams(g, model, info_dict)
+
+        # Print best parameters
+        print("\nBest Violin hyperparameters found:")
+        for param, value in best_params.items():
+            print(f"  {param}: {value}")
+        print(f"Best validation accuracy: {best_val_acc:.4f}")
+
     print('\n\n')
     print('The averaged accuracy of {} rounds of experiments on {} is: {}'.format(args.round, args.dataset, np.mean(acc_list)))
     print('The averaged time cost (seconds/ 100 epochs) of {} rounds is {:.4f}'.format(args.round, np.mean(time_cost_list) / args.n_epochs * 100))
 
-
-def run_cocovine_with_tuning(args):
-    # Create a directory for results if it doesn't exist
-    results_dir = os.path.join('exp', 'results')
-    os.makedirs(results_dir, exist_ok=True)
-
-    # First prepare the data
-    g, info_dict = load_data(args.dataset)
-    set_seed(args.seed)
-    info_dict.update(args.__dict__)
-    info_dict.update({'device': torch.device('cpu') if args.gpu == -1 else torch.device('cuda:{}'.format(args.gpu)),})
-
-    # Step 1: Train the base model (backbone)
-    print("\n--- STEP 1: Training base backbone model ---\n")
-    backbone_name = args.model[7:]  # Strip "CoCoVin" prefix
-    backbone_model = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, backbone_name)(info_dict)
-    backbone_model.to(info_dict['device'])
-    backbone_trainer = getattr(trainers, 'BaseTrainer')(g, backbone_model, info_dict)
-    val_acc, tt_acc, _, _, _, _ = backbone_trainer.train()
-    print(f"Base model trained: val_acc={val_acc:.4f}, test_acc={tt_acc:.4f}")
-
-    # Step 2: Train Phase 1 (CoCoS)
-    print("\n--- STEP 2: Training Phase 1 (CoCoS) ---\n")
-    model = getattr(models, args.model)(info_dict)
-    model.to(info_dict['device'])
-    info_dict.update({'backbone': args.model[7:]})
-    Dis = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, 'DisMLP')(info_dict)
-    Dis.to(info_dict['device'])
-
-    # Adjust epochs for phase 1
-    original_epochs = args.n_epochs
-    info_dict['n_epochs'] = args.n_epochs // 2
-
-    # Create trainer and train phase 1
-    trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis)
-    val_acc, tt_acc, _, _, _, _ = trainer.train()
-    print(f"Phase 1 trained: val_acc={val_acc:.4f}, test_acc={tt_acc:.4f}")
-
-    # Get the phase 1 model path
-    phase1_model_path = os.path.join('exp', f"{args.model}_phase1", args.dataset,
-                                    f"{args.model}_{args.dataset}_{args.seed}_phase1.pt")
-
-    # Step 3: Hyperparameter tuning for Phase 2 (Violin)
-    print("\n--- STEP 3: Hyperparameter Tuning for Phase 2 (Violin) ---\n")
-    tuning_epochs = 300  # Number of epochs for each tuning run
-
-    # Create fresh model and discriminator for tuning
-    model_tune = getattr(models, args.model)(info_dict)
-    model_tune.to(info_dict['device'])
-    Dis_tune = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, 'DisMLP')(info_dict)
-    Dis_tune.to(info_dict['device'])
-
-    # Run hyperparameter tuning
-    best_params = trainers.hyperparameter_tune_violin(
-        g, model_tune, Dis_tune, phase1_model_path, info_dict, tuning_epochs)
-
-    # Step 4: Train with best hyperparameters for full run
-    print("\n--- STEP 4: Final Training with Best Hyperparameters ---\n")
-
-    # Create fresh model and discriminator for final training
-    model_final = getattr(models, args.model)(info_dict)
-    model_final.to(info_dict['device'])
-    Dis_final = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, 'DisMLP')(info_dict)
-    Dis_final.to(info_dict['device'])
-
-    # Update info_dict with best hyperparameters
-    info_dict.update(best_params)
-    info_dict['n_epochs'] = original_epochs  # Restore original number of epochs
-
-    # Create trainer and load phase 1 state
-    final_trainer = getattr(trainers, 'CoCoVinTrainer')(g, model_final, info_dict, Dis=Dis_final)
-
-    # Load phase 1 checkpoint
-    checkpoint = torch.load(phase1_model_path, map_location=info_dict['device'])
-    model_final.load_state_dict(checkpoint['model'])
-    Dis_final.load_state_dict(checkpoint['discriminator'])
-    final_trainer.pred_labels = checkpoint['pred_labels']
-    final_trainer.pred_conf = checkpoint['pred_conf']
-    final_trainer.conf_thrs = checkpoint['conf_thrs']
-    final_trainer.pred_label_flag = False
-
-    # Skip phase 1
-    final_trainer.phase1_epochs = 0
-
-    # Train phase 2 only with best hyperparameters
-    val_acc, tt_acc, val_acc_fin, tt_acc_fin, microf1, macrof1 = final_trainer.train(phase2_only=True)
-
-    print(f"Final results with best hyperparameters: {best_params}")
-    print(f"Best validation accuracy: {val_acc:.4f}")
-    print(f"Best test accuracy: {tt_acc:.4f}")
-    print(f"Micro-F1: {microf1:.4f}, Macro-F1: {macrof1:.4f}")
-
-    return val_acc, tt_acc
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='the main program to run experiments on small datasets')
@@ -298,8 +209,9 @@ if __name__ == '__main__':
     # extra added arguements
     parser.add_argument("--seed", type=int, default=0,
                         help="the random seed to reproduce the result")
-    parser.add_argument("--tune", action='store_true', default=False,
-                        help="enable hyperparameter tuning for CoCoVin models")
+
+    parser.add_argument("--tune_hyperparams", action='store_true', default=True,
+                        help="Enable hyperparameter tuning for Phase 2 (Violin)")
 
     args = parser.parse_args()
 
