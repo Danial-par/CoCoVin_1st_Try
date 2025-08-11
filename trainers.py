@@ -408,6 +408,123 @@ class ViolinTrainer(BaseTrainer):
         return
 
 
+def hyperparameter_tune_violin(g, model, dis, phase1_state_path, info_dict, tuning_epochs=300):
+    """
+    Perform hyperparameter tuning for the second phase (Violin) of training.
+
+    Args:
+        g: Graph data
+        model: Base model
+        dis: Discriminator model
+        phase1_state_path: Path to saved phase 1 model
+        info_dict: Dictionary containing model parameters
+        tuning_epochs: Number of epochs to run for each hyperparameter combination
+
+    Returns:
+        best_params: Dictionary of best hyperparameters
+    """
+    # Define hyperparameter grid
+    param_grid = {
+        'alpha': [0.2, 0.4, 0.6, 0.8, 1.0],         # Consistency loss coefficient
+        'gamma': [0.4, 0.6, 0.8],                   # VO loss coefficient
+        'delta': [0.7, 0.8, 0.9],                   # Confidence threshold
+        'm': [1, 2],                                # Number of VOs per node
+        'cls_mode': ['virt', 'both', 'ori'],        # Classification loss mode
+        'eta': [1, 5]                               # Update interval
+    }
+
+    # Load phase 1 checkpoint
+    checkpoint = torch.load(phase1_state_path, map_location=info_dict['device'])
+
+    results = []
+    best_val_acc = 0
+    best_params = None
+
+    # Cartesian product of hyperparameter values - only tuning a subset to keep reasonable size
+    # We'll focus on the most important hyperparameters: alpha, gamma, delta, cls_mode
+    from itertools import product
+
+    # Create combinations (using only a subset of parameters to keep grid search manageable)
+    param_combinations = list(product(
+        param_grid['alpha'],
+        param_grid['gamma'],
+        param_grid['delta'],
+        param_grid['cls_mode']
+    ))
+
+    print(f"Running grid search with {len(param_combinations)} hyperparameter combinations")
+
+    for i, (alpha, gamma, delta, cls_mode) in enumerate(param_combinations):
+        print(f"\nTuning combination {i+1}/{len(param_combinations)}: alpha={alpha}, gamma={gamma}, delta={delta}, cls_mode={cls_mode}")
+
+        # Create a copy of info_dict with current hyperparameters
+        current_info = info_dict.copy()
+        current_info['alpha'] = alpha
+        current_info['gamma'] = gamma
+        current_info['delta'] = delta
+        current_info['cls_mode'] = cls_mode
+        current_info['n_epochs'] = tuning_epochs
+
+        # Initialize model with phase 1 weights
+        model_copy = deepcopy(model)
+        model_copy.load_state_dict(checkpoint['model'])
+        model_copy.to(info_dict['device'])
+
+        # Initialize discriminator
+        dis_copy = deepcopy(dis)
+        dis_copy.load_state_dict(checkpoint['discriminator'])
+        dis_copy.to(info_dict['device'])
+
+        # Create trainer with phase 2 focus
+        trainer = CoCoVinTrainer(g, model_copy, current_info, Dis=dis_copy)
+
+        # Load saved state including predicted labels
+        trainer.pred_labels = checkpoint['pred_labels']
+        trainer.pred_conf = checkpoint['pred_conf']
+        trainer.conf_thrs = checkpoint['conf_thrs']
+        trainer.pred_label_flag = False
+
+        # Set phase directly to second phase
+        trainer.phase1_epochs = 0  # Skip phase 1
+
+        # Initialize virtual edges
+        trainer.add_VOs()
+
+        # Train for specified epochs (phase 2 only)
+        val_acc, tt_acc, val_acc_fin, tt_acc_fin, microf1, macrof1 = trainer.train()
+
+        # Store results
+        result = {
+            'alpha': alpha,
+            'gamma': gamma,
+            'delta': delta,
+            'cls_mode': cls_mode,
+            'val_acc': val_acc,
+            'test_acc': tt_acc
+        }
+        results.append(result)
+
+        # Track best parameters
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_params = {
+                'alpha': alpha,
+                'gamma': gamma,
+                'delta': delta,
+                'cls_mode': cls_mode
+            }
+            print(f"New best validation accuracy: {best_val_acc:.4f} with params: {best_params}")
+
+    # Print all results sorted by validation accuracy
+    results.sort(key=lambda x: x['val_acc'], reverse=True)
+    print("\nAll hyperparameter tuning results (top 5):")
+    for i, result in enumerate(results[:5]):
+        print(f"Rank {i+1}: val_acc={result['val_acc']:.4f}, test_acc={result['test_acc']:.4f}, " +
+              f"alpha={result['alpha']}, gamma={result['gamma']}, delta={result['delta']}, cls_mode={result['cls_mode']}")
+
+    return best_params
+
+
 class CoCoVinTrainer(BaseTrainer):
     def __init__(self, g, model, info_dict, *args, **kwargs):
         super().__init__(g, model, info_dict, *args, **kwargs)
@@ -430,22 +547,79 @@ class CoCoVinTrainer(BaseTrainer):
                                     lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
 
         # Add phase tracking for sequential training
-        self.phase1_epochs = self.info_dict['n_epochs'] // 3  # First 1/3 for Violin only
+        self.phase1_epochs = self.info_dict['n_epochs'] // 2  # First half for CoCoS, second half for Violin
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
 
-    def train(self):
-        for i in range(self.info_dict['n_epochs']):
-            if i < self.phase1_epochs and i % self.info_dict['eta'] == 0:
+    def save_phase1_model(self):
+        """Save model after first phase training (CoCoS)"""
+        save_root = os.path.join('exp', f"{self.info_dict['model']}_phase1", self.info_dict['dataset'])
+        if not os.path.exists(save_root):
+            os.makedirs(save_root)
+
+        ckpname = '{model}_{db}_{seed}_phase1.pt'.format(
+            model=self.info_dict['model'],
+            db=self.info_dict['dataset'],
+            seed=self.info_dict['seed']
+        )
+        savedir = os.path.join(save_root, ckpname)
+
+        # Save both model and discriminator states
+        torch.save({
+            'model': self.model.state_dict(),
+            'discriminator': self.Dis.state_dict(),
+            'optimizer': self.opt.state_dict(),
+            'pred_labels': self.pred_labels,
+            'pred_conf': self.pred_conf,
+            'conf_thrs': self.conf_thrs,
+        }, savedir)
+
+        return savedir
+
+    def train(self, phase2_only=False):
+        if not phase2_only:
+            # Normal training with both phases
+            phase1_model_path = None
+
+            # Phase 1: CoCoS training
+            for i in range(self.phase1_epochs):
+                if i % self.info_dict['eta'] == 0:
+                    self.get_pred_labels()
+
+                tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch_cocos_only(i)
+                (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
+                (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
+
+                if val_acc_epoch > self.best_val_acc:
+                    self.best_val_acc = val_acc_epoch
+                    self.best_tt_acc = tt_acc_epoch
+                    self.best_microf1 = tt_microf1_epoch
+                    self.best_macrof1 = tt_macrof1_epoch
+                    save_model_dir = self.save_model(self.model, self.info_dict)
+
+                    if val_acc_epoch > self.best_pretr_val_acc:
+                        self.pretr_model_dir = save_model_dir
+                        self.pred_label_flag = True
+
+                if i % 50 == 0:
+                    print(f"Phase 1 - Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train: {tr_acc:.4f} | Val: {val_acc_epoch:.4f} | Test: {tt_acc_epoch:.4f}")
+
+            # Save phase 1 model
+            phase1_model_path = self.save_phase1_model()
+            print(f"Phase 1 model saved to {phase1_model_path}")
+
+            # Make sure we have up-to-date predictions before phase 2
+            self.get_pred_labels()
+
+        # Phase 2: Violin training
+        for i in range(self.phase1_epochs, self.info_dict['n_epochs']):
+            if i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
                     self.get_pred_labels()
                 self.add_VOs()
 
-            elif i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
-                self.get_pred_labels()
-
-            tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
+            tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch_violin_only(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
             (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
 
@@ -455,27 +629,25 @@ class CoCoVinTrainer(BaseTrainer):
                 self.best_microf1 = tt_microf1_epoch
                 self.best_macrof1 = tt_macrof1_epoch
                 save_model_dir = self.save_model(self.model, self.info_dict)
+
                 if val_acc_epoch > self.best_pretr_val_acc:
                     self.pretr_model_dir = save_model_dir
                     self.pred_label_flag = True
 
-                print(f"epoch {i:03d} | new best validation accuracy {self.best_val_acc:.4f} - test accuracy {self.best_tt_acc:.4f}")
-
             if i % 50 == 0:
-                print(
-                    f"Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
+                print(f"Phase 2 - Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train: {tr_acc:.4f} | Val: {val_acc_epoch:.4f} | Test: {tt_acc_epoch:.4f}")
 
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
     def train_epoch(self, epoch_i):
         if epoch_i < self.phase1_epochs:
-            # Phase 1: Violin only - but we need predicted labels first
-            if self.pred_labels is None:
-                self.get_pred_labels()  # Get initial predictions for Violin
-            return self.train_epoch_violin_only(epoch_i)
-        else:
-            # Phase 2: CoCoS only
+            # Phase 1: CoCoS only
             return self.train_epoch_cocos_only(epoch_i)
+        else:
+            # Phase 2: Violin only
+            if self.pred_labels is None:
+                self.get_pred_labels()
+            return self.train_epoch_violin_only(epoch_i)
 
     def train_epoch_cocos_only(self, epoch_i):
         # Classification + CoCoS contrastive loss only
