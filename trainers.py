@@ -408,175 +408,6 @@ class ViolinTrainer(BaseTrainer):
         return
 
 
-def tune_violin_hyperparams(g, model, info_dict, phase1_model_path=None, **kwargs):
-    """
-    Tune hyperparameters for the Violin phase of CoCoVinTrainer
-
-    Args:
-        g: Graph data
-        model: Neural network model
-        info_dict: Dictionary with training parameters
-        phase1_model_path: Path to the saved Phase 1 model (if None, will use default path)
-
-    Returns:
-        best_params: Dictionary of best hyperparameters
-        best_val_acc: Best validation accuracy achieved
-    """
-    # Define hyperparameter grid
-    param_grid = {
-        'alpha': [0.1, 0.2, 0.4, 0.6, 0.8],  # Weight for consistency loss
-        'gamma': [0.1, 0.3, 0.5],            # Weight for virtual link loss
-        'delta': [0.7, 0.8, 0.9],            # Confidence threshold
-        'm': [1, 2, 3],                      # Number of virtual links per node
-        'cls_mode': ['ori', 'virt', 'both']  # Classification mode
-    }
-
-    # If no path provided, construct default path
-    if phase1_model_path is None:
-        phase1_save_path = os.path.join('exp', 'phase1_models', info_dict['dataset'])
-        phase1_ckpt = '{model}_{db}_{seed}_phase1.pt'.format(
-            model=info_dict['model'],
-            db=info_dict['dataset'],
-            seed=info_dict['seed'])
-        phase1_model_path = os.path.join(phase1_save_path, phase1_ckpt)
-
-    # Check if Phase 1 model exists
-    if not os.path.exists(phase1_model_path):
-        raise FileNotFoundError(f"Phase 1 model not found at {phase1_model_path}")
-
-    # Track best results
-    best_val_acc = 0
-    best_params = {}
-    best_test_acc = 0
-    best_model_state = None
-
-    # Generate parameter combinations for testing
-    # For efficiency, we'll sample a subset of combinations rather than testing all
-    import itertools
-    param_keys = list(param_grid.keys())
-    param_values = list(param_grid.values())
-
-    # Limit to 20 combinations to keep runtime reasonable
-    max_combinations = 20
-    all_combinations = list(itertools.product(*param_values))
-
-    # Sample combinations if we have more than max_combinations
-    if len(all_combinations) > max_combinations:
-        import random
-        random.shuffle(all_combinations)
-        combinations = all_combinations[:max_combinations]
-    else:
-        combinations = all_combinations
-
-    print(f"Testing {len(combinations)} hyperparameter combinations for Violin phase")
-
-    # Set up for tracking results
-    results = []
-
-    # Test each combination
-    for i, values in enumerate(combinations):
-        params = dict(zip(param_keys, values))
-
-        # Update info_dict with current parameters
-        current_info_dict = info_dict.copy()
-        for k, v in params.items():
-            current_info_dict[k] = v
-
-        print(f"\nTesting combination {i+1}/{len(combinations)}: {params}")
-
-        # Reset model to Phase 1 weights
-        model.load_state_dict(torch.load(phase1_model_path, map_location=info_dict['device']))
-
-        # Create a modified trainer for Phase 2 only
-        trainer = ViolinTrainerPhase2(g, model, current_info_dict)
-        trainer.load_phase1_model(phase1_model_path)
-
-        # Train for Phase 2 only (half of total epochs)
-        n_epochs = info_dict['n_epochs'] // 2
-        val_acc, test_acc, _, _, micro_f1, macro_f1 = trainer.train_phase2_only(n_epochs)
-
-        # Record results
-        results.append({
-            'params': params,
-            'val_acc': val_acc,
-            'test_acc': test_acc,
-            'micro_f1': micro_f1,
-            'macro_f1': macro_f1
-        })
-
-        # Update best results
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            best_test_acc = test_acc
-            best_params = params.copy()
-            best_model_state = model.state_dict()
-
-            print(f"New best model: val_acc = {best_val_acc:.4f}, test_acc = {best_test_acc:.4f}")
-            print(f"Parameters: {best_params}")
-
-    # Save the best model
-    if best_model_state is not None:
-        best_model_path = os.path.join('exp', 'tuned_models', info_dict['dataset'])
-        if not os.path.exists(best_model_path):
-            os.makedirs(best_model_path)
-
-        best_ckpt = '{model}_{db}_{seed}_tuned.pt'.format(
-            model=info_dict['model'],
-            db=info_dict['dataset'],
-            seed=info_dict['seed'])
-
-        best_model_file = os.path.join(best_model_path, best_ckpt)
-        torch.save(best_model_state, best_model_file)
-        print(f"Saved best tuned model to {best_model_file}")
-
-    # Sort and display results
-    print("\nHyperparameter tuning results (sorted by validation accuracy):")
-    sorted_results = sorted(results, key=lambda x: x['val_acc'], reverse=True)
-    for i, result in enumerate(sorted_results[:5]):  # Show top 5
-        print(f"{i+1}. Val Acc: {result['val_acc']:.4f}, Test Acc: {result['test_acc']:.4f}")
-        print(f"   Params: {result['params']}")
-
-    return best_params, best_val_acc
-
-
-class ViolinTrainerPhase2(ViolinTrainer):
-    """Special trainer class that only trains the Violin phase after loading a Phase 1 model"""
-
-    def load_phase1_model(self, model_path):
-        """Load model state from Phase 1 training"""
-        self.model.load_state_dict(torch.load(model_path, map_location=self.info_dict['device']))
-        # Initialize pred_labels and conf for virtual link creation
-        self.get_pred_labels()
-
-    def train_phase2_only(self, n_epochs):
-        """Train only Phase 2 (Violin) using the pre-trained model from Phase 1"""
-        best_val_acc = 0
-        best_tt_acc = 0
-        best_microf1 = 0
-        best_macrof1 = 0
-
-        for i in range(n_epochs):
-            if i % self.info_dict['eta'] == 0:
-                if self.pred_label_flag:
-                    self.get_pred_labels()
-                self.add_VOs()
-
-            tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
-            (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
-            (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
-
-            if val_acc_epoch > best_val_acc:
-                best_val_acc = val_acc_epoch
-                best_tt_acc = tt_acc_epoch
-                best_microf1 = tt_microf1_epoch
-                best_macrof1 = tt_macrof1_epoch
-
-            if i % 50 == 0:
-                print(f"Phase 2 Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train: {tr_acc:.4f} | Val: {val_acc_epoch:.4f} | Test: {tt_acc_epoch:.4f}")
-
-        return best_val_acc, best_tt_acc, val_acc_epoch, tt_acc_epoch, best_microf1, best_macrof1
-
-
 class CoCoVinTrainer(BaseTrainer):
     def __init__(self, g, model, info_dict, *args, **kwargs):
         super().__init__(g, model, info_dict, *args, **kwargs)
@@ -601,16 +432,10 @@ class CoCoVinTrainer(BaseTrainer):
         # Add phase tracking for sequential training
         self.phase1_epochs = self.info_dict['n_epochs'] // 2  # First half for CoCoS, second half for Violin
 
-        self.tune_hyperparams = True  # Flag to indicate whether to tune hyperparameters
-
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
 
     def train(self):
-        # If we're tuning, only train Phase 1 and save the model
-        if self.tune_hyperparams:
-            return self.train_phase1_only()
-
         for i in range(self.info_dict['n_epochs']):
             if i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
@@ -640,47 +465,6 @@ class CoCoVinTrainer(BaseTrainer):
                     f"Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
 
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
-
-    def train_phase1_only(self):
-        """Train only Phase 1 (CoCoS) and save the model for later tuning"""
-        best_val_acc = 0
-        best_tt_acc = 0
-        best_val_loss = float('inf')
-
-        # Train for the first half of epochs (Phase 1)
-        for i in range(self.phase1_epochs):
-            if i % self.info_dict['eta'] == 0:
-                self.get_pred_labels()
-
-            tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch_cocos_only(i)
-            (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
-                (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
-
-            if val_acc_epoch > best_val_acc:
-                best_val_acc = val_acc_epoch
-                best_tt_acc = tt_acc_epoch
-
-                # Save the Phase 1 model
-                phase1_save_path = os.path.join('exp', 'phase1_models', self.info_dict['dataset'])
-                if not os.path.exists(phase1_save_path):
-                    os.makedirs(phase1_save_path)
-
-                phase1_ckpt = '{model}_{db}_{seed}_phase1.pt'.format(
-                    model=self.info_dict['model'],
-                    db=self.info_dict['dataset'],
-                    seed=self.info_dict['seed'])
-
-                phase1_model_path = os.path.join(phase1_save_path, phase1_ckpt)
-                torch.save(self.model.state_dict(), phase1_model_path)
-
-                print(f"Saved Phase 1 model with val acc {best_val_acc:.4f} at {phase1_model_path}")
-
-            if i % 50 == 0:
-                print(
-                    f"Phase 1 Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f}")
-
-        print(f"Phase 1 training completed. Best val acc: {best_val_acc:.4f}, test acc: {best_tt_acc:.4f}")
-        return best_val_acc, best_tt_acc, val_acc_epoch, tt_acc_epoch, 0, 0
 
     def train_epoch(self, epoch_i):
         if epoch_i < self.phase1_epochs:
