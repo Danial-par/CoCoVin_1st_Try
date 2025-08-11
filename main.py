@@ -146,15 +146,16 @@ def main(args):
         time_cost_list.append(time_cost)
         print('The time cost of the {} round ({} epochs) is: {}.'.format(i, info_dict['n_epochs'], time_cost))
 
-        # Then perform hyperparameter tuning for Phase 2
-        from trainers import tune_violin_hyperparams
-        best_params, best_val_acc = tune_violin_hyperparams(g, model, info_dict)
+        if args.model.startswith('CoCoVin') and args.tune_hyperparams:
+            # Then perform hyperparameter tuning for Phase 2
+            from trainers import tune_violin_hyperparams
+            best_params, best_val_acc = tune_violin_hyperparams(g, model, info_dict)
 
-        # Print best parameters
-        print("\nBest Violin hyperparameters found:")
-        for param, value in best_params.items():
-            print(f"  {param}: {value}")
-        print(f"Best validation accuracy: {best_val_acc:.4f}")
+            # Print best parameters
+            print("\nBest Violin hyperparameters found:")
+            for param, value in best_params.items():
+                print(f"  {param}: {value}")
+            print(f"Best validation accuracy: {best_val_acc:.4f}")
 
     print('\n\n')
     print('The averaged accuracy of {} rounds of experiments on {} is: {}'.format(args.round, args.dataset, np.mean(acc_list)))
