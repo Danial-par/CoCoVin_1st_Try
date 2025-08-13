@@ -7,7 +7,7 @@ def run_experiment(params):
     """Runs a single training experiment with the given parameters."""
     # Base command with fixed parameters for CiteSeer dataset
     command = [
-        'python', 'main.py',
+        'python3', 'main.py',
         '--model', 'CoCoVinGCN',
         '--dataset', 'CiteSeer',
         '--round', '1',
