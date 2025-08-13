@@ -1,4 +1,3 @@
-# tune_hyperparams_pubmed.py
 import os
 import itertools
 import subprocess
@@ -6,18 +5,17 @@ import pandas as pd
 
 def run_experiment(params):
     """Runs a single training experiment with the given parameters."""
-    # Base command with fixed parameters for PubMed dataset
+    # Base command with fixed parameters for CiteSeer dataset
     command = [
         'python', 'main.py',
         '--model', 'CoCoVinGCN',
-        '--dataset', 'PubMed',
+        '--dataset', 'CiteSeer',
         '--round', '1',
         '--gpu', '0',
-        '--n_epochs', '900',
+        '--n_epochs', '600',
         '--hid_dim', '128',
-        '--alpha', '0.4',
-        '--delta', '0.9',
-        '--cls_mode', 'both'
+        '--alpha', '0.2',
+        '--delta', '0.8',
     ]
 
     # Add variable parameters to the command
@@ -55,7 +53,7 @@ def run_experiment(params):
 
 
 def main():
-    # Define the hyperparameter grid for PubMed CoCoVinGCN
+    # Define the hyperparameter grid for CoCoVinGCN
     param_grid = {
         'beta': [0.1, 0.3, 0.6, 0.9],
         'cocos_cls_mode': ['shuf', 'raw', 'both'],
@@ -68,7 +66,7 @@ def main():
 
     results = []
 
-    print(f"Starting PubMed hyperparameter tuning for {len(experiments)} experiments...")
+    print(f"Starting CiteSeer hyperparameter tuning for {len(experiments)} experiments...")
 
     for i, params in enumerate(experiments):
         print(f"\n--- Experiment {i+1}/{len(experiments)} ---")
@@ -90,7 +88,7 @@ def main():
     if results:
         results_df = pd.DataFrame(results)
         results_df = results_df.sort_values(by='val_acc', ascending=False)
-        results_filename = 'tuning_results_cocovin_pubmed.csv'
+        results_filename = 'tuning_results_cocovin_citeseer.csv'
         results_df.to_csv(results_filename, index=False)
 
         print("\n--- Tuning Complete ---")
