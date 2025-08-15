@@ -429,23 +429,24 @@ class CoCoVinTrainer(BaseTrainer):
                                      {'params': self.Dis.parameters()}],
                                     lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
 
-        # Add phase tracking for sequential training
-        self.phase1_epochs = self.info_dict['n_epochs'] // 3  # First 1/3 for CoCoS only
+        self.interlace_period = 4  # Switch between CoCoS and Violin every 4 epochs
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
 
     def train(self):
         for i in range(self.info_dict['n_epochs']):
-            # First phase (CoCoS): Only need predictions, no virtual links
-            if i < self.phase1_epochs and i % self.info_dict['eta'] == 0:
+            # Determine if this is a CoCoS or Violin epoch group
+            is_cocos_phase = (i // self.interlace_period) % 2 == 0
+
+            # Run appropriate setup at the start of each interlace period
+            if i % self.interlace_period == 0:
+                # Always need predictions for both phases
                 self.get_pred_labels()
 
-            # Second phase (Violin): Need both predictions and virtual links
-            elif i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
-                if self.pred_label_flag:
-                    self.get_pred_labels()
-                self.add_VOs()
+                # Only Violin phase needs virtual links
+                if not is_cocos_phase:
+                    self.add_VOs()
 
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
@@ -470,14 +471,13 @@ class CoCoVinTrainer(BaseTrainer):
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
     def train_epoch(self, epoch_i):
-        if epoch_i < self.phase1_epochs:
-            # Phase 1: CoCoS only
-            return self.train_epoch_cocos_only(epoch_i)
-        else:
-            # Phase 2: Violin only - but we need predicted labels
-            if self.pred_labels is None:
-                self.get_pred_labels()  # Get initial predictions for Violin
-            return self.train_epoch_violin_only(epoch_i)
+                # Determine if this is a CoCoS or Violin epoch
+                is_cocos_phase = (epoch_i // self.interlace_period) % 2 == 0
+
+                if is_cocos_phase:
+                    return self.train_epoch_cocos_only(epoch_i)
+                else:
+                    return self.train_epoch_violin_only(epoch_i)
 
     def train_epoch_cocos_only(self, epoch_i):
         # Classification + CoCoS contrastive loss only
