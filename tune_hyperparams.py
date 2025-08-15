@@ -6,6 +6,7 @@ import pandas as pd
 def run_experiment(params):
     """Runs a single training experiment with the given parameters."""
     # Base command with fixed parameters for CiteSeer dataset
+    # Using the optimal CoCoS parameters since we're tuning Violin phase now
     command = [
         'python3', 'main.py',
         '--model', 'CoCoVinGCN',
@@ -14,8 +15,9 @@ def run_experiment(params):
         '--gpu', '0',
         '--n_epochs', '600',
         '--hid_dim', '128',
-        '--alpha', '0.2',
         '--delta', '0.8',
+        '--beta', '0.6',       # Fixed optimal CoCoS parameter
+        '--cocos_cls_mode', 'both'  # Default CoCoS mode
     ]
 
     # Add variable parameters to the command
@@ -53,11 +55,12 @@ def run_experiment(params):
 
 
 def main():
-    # Define the hyperparameter grid for CoCoVinGCN
+    # Define the hyperparameter grid for Violin phase
     param_grid = {
-        'beta': [0.1, 0.3, 0.6, 0.9],
-        'cocos_cls_mode': ['shuf', 'raw', 'both'],
-        'm': [1, 2, 3]
+        'alpha': [0.1, 0.2, 0.3, 0.5, 0.8],
+        'gamma': [0.1, 0.3, 0.4, 0.6, 0.9],
+        'm': [1, 2],
+        'cls_mode': ['virt']
     }
 
     # Create a list of all parameter combinations
@@ -66,7 +69,7 @@ def main():
 
     results = []
 
-    print(f"Starting CiteSeer hyperparameter tuning for {len(experiments)} experiments...")
+    print(f"Starting CiteSeer Violin phase hyperparameter tuning for {len(experiments)} experiments...")
 
     for i, params in enumerate(experiments):
         print(f"\n--- Experiment {i+1}/{len(experiments)} ---")
@@ -88,7 +91,7 @@ def main():
     if results:
         results_df = pd.DataFrame(results)
         results_df = results_df.sort_values(by='val_acc', ascending=False)
-        results_filename = 'tuning_results_cocovin_citeseer.csv'
+        results_filename = 'tuning_results_violin_phase_citeseer.csv'
         results_df.to_csv(results_filename, index=False)
 
         print("\n--- Tuning Complete ---")
