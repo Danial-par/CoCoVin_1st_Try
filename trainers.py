@@ -429,24 +429,21 @@ class CoCoVinTrainer(BaseTrainer):
                                      {'params': self.Dis.parameters()}],
                                     lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
 
-        self.interlace_period = 4  # Switch between CoCoS and Violin every 4 epochs
+        # Add phase tracking for sequential training
+        self.phase1_epochs = self.info_dict['n_epochs'] // 2  # First 1/2 for Violin only
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
 
     def train(self):
         for i in range(self.info_dict['n_epochs']):
-            # Determine if this is a CoCoS or Violin epoch group
-            is_cocos_phase = (i // self.interlace_period) % 2 == 0
+            if i < self.phase1_epochs and i % self.info_dict['eta'] == 0:
+                if self.pred_label_flag:
+                    self.get_pred_labels()
+                self.add_VOs()
 
-            # Run appropriate setup at the start of each interlace period
-            if i % self.interlace_period == 0:
-                # Always need predictions for both phases
+            elif i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
                 self.get_pred_labels()
-
-                # Only Violin phase needs virtual links
-                if not is_cocos_phase:
-                    self.add_VOs()
 
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
@@ -471,13 +468,14 @@ class CoCoVinTrainer(BaseTrainer):
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
     def train_epoch(self, epoch_i):
-                # Determine if this is a CoCoS or Violin epoch
-                is_cocos_phase = (epoch_i // self.interlace_period) % 2 == 0
-
-                if is_cocos_phase:
-                    return self.train_epoch_cocos_only(epoch_i)
-                else:
-                    return self.train_epoch_violin_only(epoch_i)
+        if epoch_i < self.phase1_epochs:
+            # Phase 1: Violin only - but we need predicted labels first
+            if self.pred_labels is None:
+                self.get_pred_labels()  # Get initial predictions for Violin
+            return self.train_epoch_violin_only(epoch_i)
+        else:
+            # Phase 2: CoCoS only
+            return self.train_epoch_cocos_only(epoch_i)
 
     def train_epoch_cocos_only(self, epoch_i):
         # Classification + CoCoS contrastive loss only
@@ -493,34 +491,19 @@ class CoCoVinTrainer(BaseTrainer):
             x_data = self.g.x.to(self.info_dict['device'])
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
 
-            # Get embeddings by forward pass through all layers except the last
-            h = x_data
-            for i, layer in enumerate(self.model.enc[:-1]):  # All layers except the last
-                h = layer(h, ori_edge_index)
-                if i < len(self.model.bns) - 1:
-                    h = self.model.bns[i](h)
-                h = self.model.act(h)
-                h = self.model.dropout(h)
-            ori_hidden = h  # This is the hidden representation (256-dim)
+            # Get logits
+            ori_logits = self.model(x_data, ori_edge_index)
 
-            # Get final logits
-            ori_logits = self.model.enc[-1](ori_hidden, ori_edge_index)
-
-            # Same process for shuffled features
             shuf_feat = self.shuffle_feat(x_data)
-            h_shuf = shuf_feat
-            for i, layer in enumerate(self.model.enc[:-1]):
-                h_shuf = layer(h_shuf, ori_edge_index)
-                if i < len(self.model.bns) - 1:
-                    h_shuf = self.model.bns[i](h_shuf)
-                h_shuf = self.model.act(h_shuf)
-                h_shuf = self.model.dropout(h_shuf)
-            shuf_hidden = h_shuf
+            shuf_logits = self.model(shuf_feat, ori_edge_index)
 
-            shuf_logits = self.model.enc[-1](shuf_hidden, ori_edge_index)
-
-            tp_shuf_nids = self.shuffle_nids()
-            tp_shuf_hidden = shuf_hidden[tp_shuf_nids]
+            # generate positive samples
+            pos_nids = self.shuffle_nids()
+            tp_ori_logits = ori_logits[pos_nids]
+            tp_shuf_logits = shuf_logits[pos_nids]
+            # generate negative samples
+            neg_nids = self.gen_neg_nids()
+            neg_ori_logits = ori_logits[neg_nids].detach()
 
             # Classification loss (use logits)
             if self.info_dict['cocos_cls_mode'] == 'shuf':
@@ -535,16 +518,14 @@ class CoCoVinTrainer(BaseTrainer):
 
             _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            # CoCoS Contrastive Loss (use hidden representations - dimension 256)
-            pos_score_f = self.Dis(torch.cat((shuf_hidden, ori_hidden), dim=-1))
+            # CoCoS Contrastive Loss (mode FS)
+            pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
             pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
-            pos_score_s = self.Dis(torch.cat((tp_shuf_hidden, shuf_hidden), dim=-1))
+            pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
             pos_loss_s = self.bce_fn(pos_score_s[ctr_nids], ctr_labels_pos)
             epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
 
-            neg_nids = self.gen_neg_nids()
-            neg_ori_hidden = ori_hidden[neg_nids].detach()
-            neg_score = self.Dis(torch.cat((ori_hidden, neg_ori_hidden), dim=-1))
+            neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
             epoch_ctr_loss_neg = self.bce_fn(neg_score[ctr_nids], ctr_labels_neg)
             epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
 

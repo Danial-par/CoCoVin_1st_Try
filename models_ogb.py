@@ -467,7 +467,7 @@ class DisMLP(nn.Module):
         self.info_dict = info_dict
 
         # Get dimensions - discriminator receives concatenated hidden representations
-        in_dim = info_dict['hid_dim'] * 2  # Fix: multiply by 2 for concatenated inputs
+        in_dim = info_dict['out_dim'] * 2  # Fix: multiply by 2 for concatenated inputs
         hid_dim = info_dict.get('emb_hid_dim', 64)
         n_layers = info_dict.get('dis_layers', 2)
         dropout = info_dict.get('dropout', 0.5)

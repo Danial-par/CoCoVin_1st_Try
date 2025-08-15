@@ -318,7 +318,7 @@ class DisMLP(nn.Module):
         self.info_dict = info_dict
         self.mlp = nn.ModuleList()
         for i in range(info_dict['dis_layers']):
-            input_dim = 2 * info_dict['hid_dim'] if i == 0 else info_dict['emb_hid_dim']
+            input_dim = 2 * info_dict['out_dim'] if i == 0 else info_dict['emb_hid_dim']
             hidden_dim = 1 if i == (info_dict['dis_layers'] - 1) else info_dict['emb_hid_dim']
             act = False if i == (info_dict['dis_layers'] - 1) else True
             self.mlp.append(nn.Sequential(
