@@ -423,12 +423,18 @@ class CoCoVinTrainer(BaseTrainer):
         self.load_pretr_model()
         self.pred_label_flag = True
 
+        self.violin_opt = torch.optim.Adam(self.model.parameters(),
+                                           lr=info_dict['lr'],
+                                           weight_decay=info_dict['weight_decay'])
+
         # Attributes from CoCoSTrainer
         self.Dis = kwargs['Dis']
         self.bce_fn = nn.BCEWithLogitsLoss()
-        self.opt = torch.optim.Adam([{'params': self.model.parameters()},
-                                     {'params': self.Dis.parameters()}],
-                                    lr=info_dict['lr_cocos'], weight_decay=info_dict['weight_decay'])
+        self.cocos_opt = torch.optim.Adam([{'params': self.model.parameters()},
+                                           {'params': self.Dis.parameters()}],
+                                          lr=info_dict['lr_cocos'],
+                                          weight_decay=info_dict['weight_decay'])
+
 
         # Add phase tracking for sequential training
         self.phase1_epochs = self.info_dict['n_epochs'] // 2  # First 1/2 for Violin only
@@ -582,9 +588,9 @@ class CoCoVinTrainer(BaseTrainer):
             # Total loss: classification + CoCoS only
             epoch_loss = epoch_cls_loss + self.info_dict['beta'] * epoch_ctr_loss
 
-            self.opt.zero_grad()
+            self.violin_opt.zero_grad()
             epoch_loss.backward()
-            self.opt.step()
+            self.violin_opt.step()
 
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
@@ -645,9 +651,9 @@ class CoCoVinTrainer(BaseTrainer):
             # Total loss: classification + Violin only
             epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss
 
-            self.opt.zero_grad()
+            self.cocos_opt.zero_grad()
             epoch_loss.backward()
-            self.opt.step()
+            self.cocos_opt.step()
 
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
