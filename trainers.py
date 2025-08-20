@@ -428,7 +428,7 @@ class CoCoVinTrainer(BaseTrainer):
         self.bce_fn = nn.BCEWithLogitsLoss()
         self.opt = torch.optim.Adam([{'params': self.model.parameters()},
                                      {'params': self.Dis.parameters()}],
-                                    lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
+                                    lr=info_dict['lr_cocos'], weight_decay=info_dict['weight_decay'])
 
         # Add phase tracking for sequential training
         self.phase1_epochs = self.info_dict['n_epochs'] // 2  # First 1/2 for Violin only

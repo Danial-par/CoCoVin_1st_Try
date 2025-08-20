@@ -155,6 +155,8 @@ if __name__ == '__main__':
                         help="specify the gpu index, set -1 to train on cpu")
     parser.add_argument("--lr", type=float, default=0.01,
                         help="the learning rate")
+    parser.add_argument("--lr_cocos", type=float, default=0.01,
+                        help="the learning rate for the CoCoS optimizer, only for CoCoS-enhanced models")
     parser.add_argument("--weight_decay", type=float, default=5e-4,
                         help="the weight decay for optimizer")
     parser.add_argument("--alpha", type=float, default=0.8,
