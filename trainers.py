@@ -588,9 +588,9 @@ class CoCoVinTrainer(BaseTrainer):
             # Total loss: classification + CoCoS only
             epoch_loss = epoch_cls_loss + self.info_dict['beta'] * epoch_ctr_loss
 
-            self.violin_opt.zero_grad()
+            self.cocos_opt.zero_grad()
             epoch_loss.backward()
-            self.violin_opt.step()
+            self.cocos_opt.step()
 
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
@@ -651,9 +651,9 @@ class CoCoVinTrainer(BaseTrainer):
             # Total loss: classification + Violin only
             epoch_loss = epoch_cls_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss
 
-            self.cocos_opt.zero_grad()
+            self.violin_opt.zero_grad()
             epoch_loss.backward()
-            self.cocos_opt.step()
+            self.violin_opt.step()
 
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
