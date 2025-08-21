@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 import seaborn as sns
+import argparse
 
 # Set plot style
 plt.style.use('seaborn-v0_8-darkgrid')
@@ -26,7 +27,7 @@ def plot_training_results(model='CoCoVin', dataset='Cora', seed=0, ema_alpha=0.2
     # Check if file exists
     if not os.path.exists(file_path):
         print(f"Error: File not found at {file_path}")
-        return
+        return False
 
     # Read Excel file
     print(f"Reading metrics from {file_path}")
@@ -132,13 +133,47 @@ def plot_training_results(model='CoCoVin', dataset='Cora', seed=0, ema_alpha=0.2
     plt.show()
     print(f"Combined plot saved to {combined_path}")
 
+    return True
+
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Plot training results with EMA trend lines')
+    parser.add_argument('--model', type=str, default='CoCoVin', help='Model name')
+    parser.add_argument('--dataset', type=str, default='Cora', help='Dataset name')
+    parser.add_argument('--seed', type=int, default=0, help='Starting seed value')
+    parser.add_argument('--num_round', type=int, default=1, help='Number of rounds/seeds to plot')
+    parser.add_argument('--ema_alpha', type=float, default=0.2, help='Smoothing factor for EMA (0-1)')
+
+    return parser.parse_args()
+
+
+def plot_multiple_seeds(model, dataset, seed, num_round, ema_alpha):
+    """Plot results for multiple seeds"""
+    print(f"Plotting results for {model} on {dataset}")
+    print(f"Processing {num_round} seeds starting from seed={seed}")
+
+    success_count = 0
+
+    for i in range(num_round):
+        current_seed = seed + i
+        print(f"\nProcessing seed {current_seed} ({i+1}/{num_round}):")
+        success = plot_training_results(model, dataset, current_seed, ema_alpha)
+        if success:
+            success_count += 1
+
+    print(f"\nPlotting complete. Successfully processed {success_count}/{num_round} seeds.")
+
 
 if __name__ == "__main__":
-    # You can change these parameters as needed
-    model = "CoCoVinGCN"
-    dataset = "Cora"
-    seed = 0
-    ema_alpha = 0.2  # Adjust this value to control smoothing (lower = smoother)
+    # Parse command line arguments
+    args = parse_arguments()
 
-    plot_training_results(model, dataset, seed, ema_alpha)
-
+    # Plot results for multiple seeds
+    plot_multiple_seeds(
+        model=args.model,
+        dataset=args.dataset,
+        seed=args.seed,
+        num_round=args.num_round,
+        ema_alpha=args.ema_alpha
+    )
