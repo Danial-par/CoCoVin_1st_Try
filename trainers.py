@@ -541,6 +541,9 @@ class CoCoVinTrainer(BaseTrainer):
         ctr_labels_pos = torch.ones_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
         ctr_labels_neg = torch.zeros_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
 
+        # Compute importance weights for all nodes
+        importance_scores = self.compute_importance_scores()
+
         self.model.train()
         self.Dis.train()
         with torch.set_grad_enabled(True):
@@ -574,11 +577,21 @@ class CoCoVinTrainer(BaseTrainer):
 
             _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            # CoCoS Contrastive Loss (mode FS)
+            # Extract importance weights for contrastive nodes
+            ctr_weights = importance_scores[ctr_nids]
+
+            # CoCoS Contrastive Loss (mode FS) + importance weighting for positive pairs
             pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
-            pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
+            # Use reduction='none' to get per-sample losses
+            pos_loss_f_samples = F.binary_cross_entropy_with_logits(pos_score_f[ctr_nids], ctr_labels_pos, reduction='none')
+            # Apply weights and take mean
+            pos_loss_f = (pos_loss_f_samples * ctr_weights.unsqueeze(1)).mean()
+
             pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
-            pos_loss_s = self.bce_fn(pos_score_s[ctr_nids], ctr_labels_pos)
+            # weight this term as well
+            pos_loss_s_samples = F.binary_cross_entropy_with_logits(pos_score_s[ctr_nids], ctr_labels_pos, reduction='none')
+            pos_loss_s = (pos_loss_s_samples * ctr_weights.unsqueeze(1)).mean()
+
             epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
 
             neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
