@@ -139,7 +139,7 @@ def plot_training_results(model='CoCoVin', dataset='Cora', seed=0, ema_alpha=0.2
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='Plot training results with EMA trend lines')
-    parser.add_argument('--model', type=str, default='CoCoVin', help='Model name')
+    parser.add_argument('--model', type=str, default='CoCoVinGCN', help='Model name')
     parser.add_argument('--dataset', type=str, default='Cora', help='Dataset name')
     parser.add_argument('--seed', type=int, default=0, help='Starting seed value')
     parser.add_argument('--num_round', type=int, default=1, help='Number of rounds/seeds to plot')
