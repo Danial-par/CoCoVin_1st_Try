@@ -541,6 +541,9 @@ class CoCoVinTrainer(BaseTrainer):
         ctr_labels_pos = torch.ones_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
         ctr_labels_neg = torch.zeros_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
 
+        # Compute importance weights for all nodes
+        importance_scores = self.compute_importance_scores()
+
         self.model.train()
         self.Dis.train()
         with torch.set_grad_enabled(True):
@@ -561,20 +564,30 @@ class CoCoVinTrainer(BaseTrainer):
             neg_nids = self.gen_neg_nids()
             neg_ori_logits = ori_logits[neg_nids].detach()
 
-            # Classification loss (use logits)
+            # Extract importance weights for training nodes
+            cls_weights = importance_scores[cls_nids]
+
+            # Classification loss (use logits) with importance weighting
             if self.info_dict['cocos_cls_mode'] == 'shuf':
-                epoch_cls_loss = self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
+                # Calculate per-sample loss
+                per_sample_loss = F.cross_entropy(shuf_logits[cls_nids], cls_labels, reduction='none')
+                # Apply importance weights
+                epoch_cls_loss = (per_sample_loss * cls_weights).mean()
             elif self.info_dict['cocos_cls_mode'] == 'raw':
-                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                per_sample_loss = F.cross_entropy(ori_logits[cls_nids], cls_labels, reduction='none')
+                epoch_cls_loss = (per_sample_loss * cls_weights).mean()
             elif self.info_dict['cocos_cls_mode'] == 'both':
-                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
-                                      self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels))
+                per_sample_loss1 = F.cross_entropy(ori_logits[cls_nids], cls_labels, reduction='none')
+                per_sample_loss2 = F.cross_entropy(shuf_logits[cls_nids], cls_labels, reduction='none')
+                epoch_cls_loss = 0.5 * ((per_sample_loss1 * cls_weights).mean() +
+                                       (per_sample_loss2 * cls_weights).mean())
             else:
-                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                per_sample_loss = F.cross_entropy(ori_logits[cls_nids], cls_labels, reduction='none')
+                epoch_cls_loss = (per_sample_loss * cls_weights).mean()
 
             _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            # CoCoS Contrastive Loss (mode FS)
+            # CoCoS Contrastive Loss (mode FS) - unchanged
             pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
             pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
             pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
@@ -664,6 +677,22 @@ class CoCoVinTrainer(BaseTrainer):
                 torch.cuda.empty_cache()
 
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
+
+    def compute_importance_scores(self):
+        """
+        Compute importance scores for all nodes based on the model's confidence.
+        Score = max_k p_ik (maximum probability from softmax output)
+        """
+        self.model.eval()
+        with torch.set_grad_enabled(False):
+            x_data = self.g.x.to(self.info_dict['device'])
+            ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
+            logits = self.model(x_data, ori_edge_index)
+            probs = torch.softmax(logits, dim=1)
+            # Get the maximum probability for each node (confidence score)
+            importance_scores = probs.max(dim=1)[0]
+
+        return importance_scores
 
     # --- Include all helper methods from ViolinTrainer ---
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
