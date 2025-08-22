@@ -667,9 +667,13 @@ class CoCoVinTrainer(BaseTrainer):
 
     def compute_importance_scores(self):
         """
-        Compute importance scores for all nodes based on entropy of probability distribution.
-        Lower entropy (more certainty) = higher importance score
-        The formula for weighting is: w_i = 1 - (H(p_i) / H_max)
+        Compute importance scores for all nodes based on margin between top two class probabilities.
+        Higher margin indicates higher confidence in the prediction.
+
+        Score formula: w_i = p_i,k1 - p_i,k2
+        Where:
+          - p_i,k1 is the probability of the most likely class
+          - p_i,k2 is the probability of the second most likely class
         """
         self.model.eval()
         with torch.set_grad_enabled(False):
@@ -678,20 +682,15 @@ class CoCoVinTrainer(BaseTrainer):
             logits = self.model(x_data, ori_edge_index)
             probs = torch.softmax(logits, dim=1)
 
-            # Calculate entropy: -sum(p_i * log(p_i))
-            # Add small epsilon to avoid log(0)
-            eps = 1e-8
-            log_probs = torch.log(probs + eps)
-            entropy = -torch.sum(probs * log_probs, dim=1)
+            # Sort probabilities in descending order
+            sorted_probs, _ = torch.sort(probs, dim=1, descending=True)
 
-            # Normalize entropy to [0,1] range
-            # Maximum entropy is log(num_classes)
-            num_classes = probs.size(1)
-            max_entropy = torch.log(torch.tensor(num_classes, dtype=torch.float,
-                                                device=self.info_dict['device']))
-
-            # Convert entropy to importance: 1 = perfectly certain, 0 = maximum uncertainty
-            importance_scores = 1.0 - (entropy / max_entropy)
+            # Calculate margin between top two predictions
+            # If there's only one class, use the top probability directly
+            if sorted_probs.size(1) > 1:
+                importance_scores = sorted_probs[:, 0] - sorted_probs[:, 1]
+            else:
+                importance_scores = sorted_probs[:, 0]
 
         return importance_scores
 
@@ -801,14 +800,8 @@ class CoCoVinTrainer(BaseTrainer):
 
             _, preds = torch.max(logits, dim=1)
 
-            # Calculate entropy-based importance scores
-            probs = torch.softmax(logits, dim=1)
-            eps = 1e-8
-            log_probs = torch.log(probs + eps)
-            entropy = -torch.sum(probs * log_probs, dim=1)
-            num_classes = probs.size(1)
-            max_entropy = torch.log(torch.tensor(num_classes, dtype=torch.float, device=self.info_dict['device']))
-            importance_scores = 1.0 - (entropy / max_entropy)
+            # Use the importance scores calculation method instead of repeating code
+            importance_scores = self.compute_importance_scores()
 
             # Store importance scores as confidence metric
             self.pred_labels = preds
