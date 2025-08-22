@@ -789,7 +789,6 @@ class CoCoVinTrainer(BaseTrainer):
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
 
     def get_pred_labels(self):
-
         # load the pretrained model and use it to estimate the labels
         cur_model_state_dict = deepcopy(self.model.state_dict())
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -801,18 +800,28 @@ class CoCoVinTrainer(BaseTrainer):
             logits = self.model(x_data, edge_index)
 
             _, preds = torch.max(logits, dim=1)
-            conf = torch.softmax(logits, dim=1).max(dim=1)[0]
+
+            # Calculate entropy-based importance scores
+            probs = torch.softmax(logits, dim=1)
+            eps = 1e-8
+            log_probs = torch.log(probs + eps)
+            entropy = -torch.sum(probs * log_probs, dim=1)
+            num_classes = probs.size(1)
+            max_entropy = torch.log(torch.tensor(num_classes, dtype=torch.float, device=self.info_dict['device']))
+            importance_scores = 1.0 - (entropy / max_entropy)
+
+            # Store importance scores as confidence metric
             self.pred_labels = preds
             # for training nodes, the estimated labels will be replaced by their ground-truth labels
             self.pred_labels[self.tr_mask] = self.labels[self.tr_mask].to(self.info_dict['device'])
-            self.pred_conf = conf
+            self.pred_conf = importance_scores  # Use importance scores instead of max confidence
 
             pretr_val_acc = torch.sum(preds[self.val_nid].cpu() == self.labels[self.val_nid]).item() * 1.0 / \
                             self.labels[self.val_nid].shape[0]
             self.best_pretr_val_acc = pretr_val_acc
 
-            # set the confidence threshold
-            self.set_conf_thrs(preds, conf, self.val_nid)
+            # set the confidence threshold using the importance scores
+            self.set_conf_thrs(preds, self.pred_conf, self.val_nid)
 
         # reload the current model's parameters
         self.model.load_state_dict(cur_model_state_dict)
