@@ -541,9 +541,6 @@ class CoCoVinTrainer(BaseTrainer):
         ctr_labels_pos = torch.ones_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
         ctr_labels_neg = torch.zeros_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
 
-        # Compute importance weights for all nodes
-        importance_scores = self.compute_importance_scores()
-
         self.model.train()
         self.Dis.train()
         with torch.set_grad_enabled(True):
@@ -564,33 +561,20 @@ class CoCoVinTrainer(BaseTrainer):
             neg_nids = self.gen_neg_nids()
             neg_ori_logits = ori_logits[neg_nids].detach()
 
-            # Extract importance weights for training nodes
-            cls_weights = importance_scores[cls_nids]
-
-            # Invert the weights: more weight to less stable nodes (1 - weight)
-            inverted_cls_weights = 1.0 - cls_weights
-
-            # Classification loss (use logits) with inverted importance weighting
+            # Classification loss (use logits)
             if self.info_dict['cocos_cls_mode'] == 'shuf':
-                # Calculate per-sample loss
-                per_sample_loss = F.cross_entropy(shuf_logits[cls_nids], cls_labels, reduction='none')
-                # Apply inverted importance weights
-                epoch_cls_loss = (per_sample_loss * inverted_cls_weights).mean()
+                epoch_cls_loss = self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
             elif self.info_dict['cocos_cls_mode'] == 'raw':
-                per_sample_loss = F.cross_entropy(ori_logits[cls_nids], cls_labels, reduction='none')
-                epoch_cls_loss = (per_sample_loss * inverted_cls_weights).mean()
+                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
             elif self.info_dict['cocos_cls_mode'] == 'both':
-                per_sample_loss1 = F.cross_entropy(ori_logits[cls_nids], cls_labels, reduction='none')
-                per_sample_loss2 = F.cross_entropy(shuf_logits[cls_nids], cls_labels, reduction='none')
-                epoch_cls_loss = 0.5 * ((per_sample_loss1 * inverted_cls_weights).mean() +
-                                      (per_sample_loss2 * inverted_cls_weights).mean())
+                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
+                                      self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels))
             else:
-                per_sample_loss = F.cross_entropy(ori_logits[cls_nids], cls_labels, reduction='none')
-                epoch_cls_loss = (per_sample_loss * inverted_cls_weights).mean()
+                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
 
             _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            # CoCoS Contrastive Loss (mode FS) - unchanged
+            # CoCoS Contrastive Loss (mode FS)
             pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
             pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
             pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
@@ -683,8 +667,9 @@ class CoCoVinTrainer(BaseTrainer):
 
     def compute_importance_scores(self):
         """
-        Compute importance scores for all nodes based on the model's confidence.
-        Score = max_k p_ik (maximum probability from softmax output)
+        Compute importance scores for all nodes based on entropy of probability distribution.
+        Lower entropy (more certainty) = higher importance score
+        The formula for weighting is: w_i = 1 - (H(p_i) / H_max)
         """
         self.model.eval()
         with torch.set_grad_enabled(False):
@@ -692,8 +677,21 @@ class CoCoVinTrainer(BaseTrainer):
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
             logits = self.model(x_data, ori_edge_index)
             probs = torch.softmax(logits, dim=1)
-            # Get the maximum probability for each node (confidence score)
-            importance_scores = probs.max(dim=1)[0]
+
+            # Calculate entropy: -sum(p_i * log(p_i))
+            # Add small epsilon to avoid log(0)
+            eps = 1e-8
+            log_probs = torch.log(probs + eps)
+            entropy = -torch.sum(probs * log_probs, dim=1)
+
+            # Normalize entropy to [0,1] range
+            # Maximum entropy is log(num_classes)
+            num_classes = probs.size(1)
+            max_entropy = torch.log(torch.tensor(num_classes, dtype=torch.float,
+                                                device=self.info_dict['device']))
+
+            # Convert entropy to importance: 1 = perfectly certain, 0 = maximum uncertainty
+            importance_scores = 1.0 - (entropy / max_entropy)
 
         return importance_scores
 
