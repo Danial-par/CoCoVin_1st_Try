@@ -541,6 +541,9 @@ class CoCoVinTrainer(BaseTrainer):
         ctr_labels_pos = torch.ones_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
         ctr_labels_neg = torch.zeros_like(ctr_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
 
+        # Compute importance weights for all nodes
+        importance_scores = self.compute_importance_scores()
+
         self.model.train()
         self.Dis.train()
         with torch.set_grad_enabled(True):
@@ -561,20 +564,33 @@ class CoCoVinTrainer(BaseTrainer):
             neg_nids = self.gen_neg_nids()
             neg_ori_logits = ori_logits[neg_nids].detach()
 
-            # Classification loss (use logits)
+            # Extract importance weights for training nodes
+            cls_weights = importance_scores[cls_nids]
+
+            # Invert the weights: more weight to less stable nodes (1 - weight)
+            inverted_cls_weights = 1.0 - cls_weights
+
+            # Classification loss (use logits) with inverted importance weighting
             if self.info_dict['cocos_cls_mode'] == 'shuf':
-                epoch_cls_loss = self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
+                # Calculate per-sample loss
+                per_sample_loss = F.cross_entropy(shuf_logits[cls_nids], cls_labels, reduction='none')
+                # Apply inverted importance weights
+                epoch_cls_loss = (per_sample_loss * inverted_cls_weights).mean()
             elif self.info_dict['cocos_cls_mode'] == 'raw':
-                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                per_sample_loss = F.cross_entropy(ori_logits[cls_nids], cls_labels, reduction='none')
+                epoch_cls_loss = (per_sample_loss * inverted_cls_weights).mean()
             elif self.info_dict['cocos_cls_mode'] == 'both':
-                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
-                                      self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels))
+                per_sample_loss1 = F.cross_entropy(ori_logits[cls_nids], cls_labels, reduction='none')
+                per_sample_loss2 = F.cross_entropy(shuf_logits[cls_nids], cls_labels, reduction='none')
+                epoch_cls_loss = 0.5 * ((per_sample_loss1 * inverted_cls_weights).mean() +
+                                      (per_sample_loss2 * inverted_cls_weights).mean())
             else:
-                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                per_sample_loss = F.cross_entropy(ori_logits[cls_nids], cls_labels, reduction='none')
+                epoch_cls_loss = (per_sample_loss * inverted_cls_weights).mean()
 
             _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            # CoCoS Contrastive Loss (mode FS)
+            # CoCoS Contrastive Loss (mode FS) - unchanged
             pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
             pos_loss_f = self.bce_fn(pos_score_f[ctr_nids], ctr_labels_pos)
             pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
@@ -615,9 +631,6 @@ class CoCoVinTrainer(BaseTrainer):
             aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
             virt_edge_index = self.virt_edge_index.to(self.info_dict['device'])
 
-            # Compute importance scores for all nodes
-            importance_scores = self.compute_importance_scores()
-
             # Process original graph first
             ori_logits = self.model(x_data, ori_edge_index)
             ori_conf = torch.softmax(ori_logits, dim=1)
@@ -631,21 +644,10 @@ class CoCoVinTrainer(BaseTrainer):
             aug_logits = self.model(x_data, aug_edge_index)
             aug_conf = torch.softmax(aug_logits, dim=1)
 
-            # Weighted Violin losses
-            # 1. Consistency loss - weight by node importance (higher confidence = stricter consistency)
-            node_diffs = torch.abs(ori_conf[con_nids] - aug_conf[con_nids]).sum(dim=1)
-            node_weights = importance_scores[con_nids]
-            epoch_con_loss = (node_diffs * node_weights).mean()
-
-            # 2. Virtual link loss - weight by average importance of connected nodes
+            # Violin losses
+            epoch_con_loss = torch.abs(ori_conf[con_nids] - aug_conf[con_nids]).sum(dim=1).mean()
             num_unq_vls = virt_edge_index.shape[1] // 2
-            vl_diffs = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] -
-                                 aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1)
-
-            # Compute average importance of connected nodes in each virtual link
-            vl_weights = 0.5 * (importance_scores[virt_edge_index[0, :num_unq_vls]] +
-                               importance_scores[virt_edge_index[1, :num_unq_vls]])
-            epoch_vl_loss = (vl_diffs * vl_weights).mean()
+            epoch_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] - aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
 
             # Classification loss - recompute logits only when needed
             if self.info_dict['cls_mode'] == 'ori':
@@ -658,8 +660,7 @@ class CoCoVinTrainer(BaseTrainer):
                 _, preds = torch.max(aug_logits[cls_nids], dim=1)
             elif self.info_dict['cls_mode'] == 'both':
                 ori_logits_cls = self.model(x_data, ori_edge_index)
-                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits_cls[cls_nids], cls_labels) +
-                                       self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
+                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits_cls[cls_nids], cls_labels) + self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
                 _, preds = torch.max((ori_logits_cls + aug_logits)[cls_nids], dim=1)
                 del ori_logits_cls
 
