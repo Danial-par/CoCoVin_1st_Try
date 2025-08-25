@@ -6,7 +6,7 @@ import models
 import models_ogb
 import trainers
 import torch_geometric as pyg
-from torch_geometric.datasets import Planetoid
+from torch_geometric.datasets import Planetoid, Amazon, Coauthor
 from ogb.nodeproppred import PygNodePropPredDataset
 from torch_geometric import transforms
 import numpy as np
@@ -51,21 +51,75 @@ def ogb_prep(db, db_dir):
 
     return graph, dataset.num_classes
 
-def load_data(db, db_dir='./dataset'):
-    if db in ['Cora', 'CiteSeer', 'PubMed']:
-        data = Planetoid(db_dir, db, transform=transforms.NormalizeFeatures())
-        g = data[0]
-        out_dim = data.num_classes
-    elif db == 'ogbn-arxiv':
-        g, out_dim = ogb_prep('ogbn-arxiv', db_dir)
-    else:
-        raise ValueError('Unknown dataset: {}'.format(db))
+def create_standard_split(data, num_per_class):
+    # Get the number of nodes and classes
+    num_nodes = data.x.size(0)
+    num_classes = data.y.max().item() + 1
 
-    info_dict = {
-        'in_dim': g.x.shape[1],
-        'out_dim': out_dim
-    }
-    return g, info_dict
+    # Initialize masks
+    train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+
+    # For each class, sample num_per_class nodes for training
+    # 30% of remaining nodes for validation, 70% for testing
+    for c in range(num_classes):
+        # Find nodes of this class
+        idx = (data.y == c).nonzero(as_tuple=True)[0]
+
+        # Shuffle the indices
+        idx = idx[torch.randperm(idx.size(0))]
+
+        # Select training nodes (20 per class)
+        train_nodes = idx[:num_per_class]
+        train_mask[train_nodes] = True
+
+        # Remaining nodes
+        remaining = idx[num_per_class:]
+        n_val = int(remaining.size(0) * 0.3)
+
+        # Split between validation and test
+        val_nodes = remaining[:n_val]
+        test_nodes = remaining[n_val:]
+        val_mask[val_nodes] = True
+        test_mask[test_nodes] = True
+
+    # Add the masks to the data object
+    data.train_mask = train_mask
+    data.val_mask = val_mask
+    data.test_mask = test_mask
+
+    return data
+
+def load_data(db, db_dir='./dataset'):
+        if db in ['Cora', 'CiteSeer', 'PubMed']:
+            data = Planetoid(db_dir, db, transform=transforms.NormalizeFeatures())
+            g = data[0]
+            out_dim = data.num_classes
+        elif db in ['photo', 'computer']:
+            data = Amazon(db_dir, db, transform=transforms.NormalizeFeatures())
+            g = data[0]
+            out_dim = data.num_classes
+            # Create standard split with 20 labels per class
+            g = create_standard_split(g, 20)
+        elif db in ['cs', 'physics']:
+            data = Coauthor(db_dir, db, transform=transforms.NormalizeFeatures())
+            g = data[0]
+            out_dim = data.num_classes
+            # Create standard split with 20 labels per class
+            g = create_standard_split(g, 20)
+        elif db == 'ogbn-arxiv':
+            g, out_dim = ogb_prep('ogbn-arxiv', db_dir)
+        elif db == 'ogbn-products':
+            g, out_dim = ogb_prep('ogbn-products', db_dir)
+        else:
+            raise ValueError('Unknown dataset: {}'.format(db))
+
+        info_dict = {
+            'in_dim': g.x.shape[1],
+            'out_dim': out_dim
+        }
+        return g, info_dict
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -140,7 +194,7 @@ if __name__ == '__main__':
     parser.add_argument("--model", type=str, default='ViolinGCN',
                         help="model name")
     parser.add_argument("--dataset", type=str, default='Cora',
-                        help="the dataset for the experiment")
+                        help="the dataset for the experiment (Cora, CiteSeer, PubMed, photo, computer, cs, physics, ogbn-arxiv, ogbn-products)")
     parser.add_argument("--n_epochs", type=int, default=300,
                         help="the number of training epochs")
     parser.add_argument("--eta", type=int, default=1,
