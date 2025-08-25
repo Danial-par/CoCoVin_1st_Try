@@ -96,7 +96,7 @@ def load_data(db, db_dir='./dataset'):
             data = Planetoid(db_dir, db, transform=transforms.NormalizeFeatures())
             g = data[0]
             out_dim = data.num_classes
-        elif db in ['photo', 'computer']:
+        elif db in ['photo', 'computers']:
             data = Amazon(db_dir, db, transform=transforms.NormalizeFeatures())
             g = data[0]
             out_dim = data.num_classes
