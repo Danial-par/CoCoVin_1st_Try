@@ -437,7 +437,7 @@ class CoCoVinTrainer(BaseTrainer):
 
 
         # Add phase tracking for sequential training
-        self.phase1_epochs = self.info_dict['n_epochs'] // 2  # First 1/2 for Violin only
+        self.phase1_epochs = self.info_dict['n_epochs'] // 2  # First 1/2 for CoCoS only
 
         # Add tracking lists for training metrics
         self.train_losses = []
@@ -446,6 +446,9 @@ class CoCoVinTrainer(BaseTrainer):
         self.val_accs = []
         self.test_losses = []
         self.test_accs = []
+
+        self.phase1_preds = None  # To store predictions after CoCoS phase
+        self.importance_scores = None  # To store node importance scores
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -480,15 +483,34 @@ class CoCoVinTrainer(BaseTrainer):
 
         print(f"Training metrics saved to {excel_path}")
 
+    def save_phase1_predictions(self):
+        """Save current model predictions at the end of CoCoS phase"""
+        self.model.eval()
+        with torch.set_grad_enabled(False):
+            x_data = self.g.x.to(self.info_dict['device'])
+            edge_index = self.ori_edge_index.to(self.info_dict['device'])
+            logits = self.model(x_data, edge_index)
+
+            # Get predictions
+            _, preds = torch.max(logits, dim=1)
+            self.phase1_preds = preds.clone()
+
+            print("Phase 1 (CoCoS) predictions saved for stability scoring")
+
     def train(self):
         for i in range(self.info_dict['n_epochs']):
+            # Save predictions at the transition between phases
+            if i == self.phase1_epochs:
+                self.save_phase1_predictions()
+
             if i < self.phase1_epochs and i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
                     self.get_pred_labels()
-                self.add_VOs()
 
             elif i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
-                self.get_pred_labels()
+                if self.pred_label_flag:
+                    self.get_pred_labels()
+                self.add_VOs()
 
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
@@ -525,13 +547,13 @@ class CoCoVinTrainer(BaseTrainer):
 
     def train_epoch(self, epoch_i):
         if epoch_i < self.phase1_epochs:
-            # Phase 1: Violin only - but we need predicted labels first
+            # Phase 1: CoCoS only
+            return self.train_epoch_cocos_only(epoch_i)
+        else:
+            # Phase 2: Violin only - but we need predicted labels first
             if self.pred_labels is None:
                 self.get_pred_labels()  # Get initial predictions for Violin
             return self.train_epoch_violin_only(epoch_i)
-        else:
-            # Phase 2: CoCoS only
-            return self.train_epoch_cocos_only(epoch_i)
 
     def train_epoch_cocos_only(self, epoch_i):
         # Classification + CoCoS contrastive loss only
@@ -665,6 +687,44 @@ class CoCoVinTrainer(BaseTrainer):
 
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
+    def compute_importance_scores(self, current_preds, current_conf, threshold=0.0):
+        """
+        Compute node importance scores based on hard-label agreement between
+        phase 1 and current predictions.
+
+        Args:
+            current_preds: Current model predictions
+            current_conf: Current model confidence scores
+            threshold: Confidence threshold for full weight (default 0.0)
+
+        Returns:
+            importance_scores: Node importance scores
+        """
+        if self.phase1_preds is None:
+            return current_conf  # Fallback to confidence if phase 1 predictions aren't available
+
+        # Move tensors to CPU for comparison
+        phase1_preds = self.phase1_preds.cpu()
+        current_preds = current_preds.cpu()
+        current_conf = current_conf.cpu()
+
+        # Initialize scores
+        importance_scores = torch.zeros_like(current_conf)
+
+        # Case 1: Labels match and confidence >= threshold
+        match_high_conf = (phase1_preds == current_preds) & (current_conf >= threshold)
+        importance_scores[match_high_conf] = 1.0
+
+        # Case 2: Labels match but confidence < threshold
+        match_low_conf = (phase1_preds == current_preds) & (current_conf < threshold)
+        importance_scores[match_low_conf] = 0.5
+
+        # Case 3: Labels don't match
+        no_match = (phase1_preds != current_preds)
+        importance_scores[no_match] = 0.1
+
+        return importance_scores
+
     # --- Include all helper methods from ViolinTrainer ---
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
     def add_VOs(self):
@@ -674,7 +734,17 @@ class CoCoVinTrainer(BaseTrainer):
         '''
         labels = self.pred_labels.cpu()
         conf = self.pred_conf.cpu()
-        conf_mask = conf >= self.conf_thrs
+        # conf_mask = conf >= self.conf_thrs
+
+        # Compute importance scores based on hard-label agreement
+        self.importance_scores = self.compute_importance_scores(
+            self.pred_labels,
+            conf,
+            threshold=0.0  # Default threshold
+        )
+
+        # Use importance scores instead of raw confidence
+        conf_mask = self.importance_scores >= self.conf_thrs
 
         ori_adj = self.ori_edge_index
         # print('The number of edges before adding virtual links: {}'.format(ori_adj.shape[1]))
@@ -684,6 +754,7 @@ class CoCoVinTrainer(BaseTrainer):
         virt_edges = []
         tr_mask = self.g.train_mask.bool()
         other_mask = ~tr_mask
+
         # construct virtual links
         label_list = list(set(labels.numpy().tolist()))
         for i in range(n_vo):
