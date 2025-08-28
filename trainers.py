@@ -450,6 +450,9 @@ class CoCoVinTrainer(BaseTrainer):
         self.phase1_probs = None  # To store probability distributions after CoCoS phase
         self.importance_scores = None  # To store node importance scores
 
+        self.prediction_memory = []  # FIFO queue for storing past predictions
+        self.memory_size = 32  # Size of the prediction memory
+
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
 
@@ -495,6 +498,32 @@ class CoCoVinTrainer(BaseTrainer):
             self.phase1_probs = F.softmax(logits, dim=1).clone()
             print("Phase 1 (CoCoS) probability distributions saved for stability scoring")
 
+    def update_prediction_memory(self):
+        """
+        Store current model predictions in the memory bank.
+        Maintains a FIFO queue of fixed size.
+        """
+        self.model.eval()
+        with torch.set_grad_enabled(False):
+            x_data = self.g.x.to(self.info_dict['device'])
+            edge_index = self.ori_edge_index.to(self.info_dict['device'])
+            logits = self.model(x_data, edge_index)
+
+            # Get predicted classes
+            _, preds = torch.max(logits, dim=1)
+
+            # Move to CPU for storage
+            current_preds = preds.cpu()
+
+            # Add to memory bank
+            self.prediction_memory.append(current_preds)
+
+            # Keep only the most recent predictions
+            if len(self.prediction_memory) > self.memory_size:
+                self.prediction_memory.pop(0)  # Remove oldest entry
+
+        print(f"Updated prediction memory. Current size: {len(self.prediction_memory)}/{self.memory_size}")
+
     def train(self):
         for i in range(self.info_dict['n_epochs']):
             # Save predictions at the transition between phases
@@ -504,10 +533,14 @@ class CoCoVinTrainer(BaseTrainer):
             if i < self.phase1_epochs and i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
                     self.get_pred_labels()
+                # Update prediction memory
+                self.update_prediction_memory()
 
             elif i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
                     self.get_pred_labels()
+                # Update prediction memory
+                self.update_prediction_memory()
                 self.add_VOs()
 
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
@@ -687,47 +720,36 @@ class CoCoVinTrainer(BaseTrainer):
 
     def compute_importance_scores(self):
         """
-        Compute node importance scores based on confidence gain between phases.
+        Compute node importance scores based on label stability across predictions.
 
-        Define: g_i = max p^(2)_i - max p^(1)_i
-        Score: w_i = (g_i - g_min)/(g_max - g_min)
-        Description: Prioritize nodes that became more confident after stage 2
+        Score: w_i = (1/|M|) * max_k sum_{t=1}^{|M|} 1{y^(t)_i = k}
+        Description: Higher score means more stable predictions over time
         """
-        if self.phase1_probs is None:
-            print("Phase 1 probability distributions not found!")
-            return torch.ones(self.g.num_nodes)  # Fallback to all 1s
-
-        # Get current probability distributions
-        self.model.eval()
-        with torch.set_grad_enabled(False):
-            x_data = self.g.x.to(self.info_dict['device'])
-            edge_index = self.ori_edge_index.to(self.info_dict['device'])
-            logits = self.model(x_data, edge_index)
-            current_probs = F.softmax(logits, dim=1)
-
-        # Move tensors to CPU for computation
-        phase1_probs = self.phase1_probs.cpu()
-        current_probs = current_probs.cpu()
-
-        # Get maximum probability for each node from both phases
-        max_prob_phase1 = torch.max(phase1_probs, dim=1)[0]  # [0] to get values, not indices
-        max_prob_current = torch.max(current_probs, dim=1)[0]
-
-        # Calculate confidence gain
-        confidence_gain = max_prob_current - max_prob_phase1
-
-        # Min-max normalization to scale to [0,1]
-        gain_min = confidence_gain.min()
-        gain_max = confidence_gain.max()
-
-        # Handle edge case where all gains are identical
-        if gain_max == gain_min:
+        if not hasattr(self, 'prediction_memory') or len(self.prediction_memory) == 0:
+            print("Prediction memory is empty! Falling back to uniform weights.")
             return torch.ones(self.g.num_nodes)
 
-        # Normalize gain to [0,1] range
-        normalized_gain = (confidence_gain - gain_min) / (gain_max - gain_min)
+        # Convert stored predictions to tensor format
+        # Shape: [memory_size, num_nodes]
+        stored_preds = torch.stack(self.prediction_memory)
 
-        return normalized_gain
+        # Count occurrences of each class for each node
+        num_nodes = self.g.num_nodes
+        num_classes = self.info_dict['out_dim']
+        class_counts = torch.zeros((num_nodes, num_classes))
+
+        # For each class, count how many times it was predicted for each node
+        for cls_idx in range(num_classes):
+            # Sum over the memory dimension where prediction equals cls_idx
+            class_counts[:, cls_idx] = torch.sum(stored_preds == cls_idx, dim=0).float()
+
+        # Get the count of the most frequently predicted class for each node
+        max_counts = torch.max(class_counts, dim=1)[0]
+
+        # Normalize by memory size to get frequency (0 to 1 range)
+        stability_scores = max_counts / len(self.prediction_memory)
+
+        return stability_scores
 
     # --- Include all helper methods from ViolinTrainer ---
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
@@ -740,7 +762,7 @@ class CoCoVinTrainer(BaseTrainer):
         conf = self.pred_conf.cpu()
         # conf_mask = conf >= self.conf_thrs
 
-        # Compute importance scores based on hard-label agreement
+        # Compute importance scores
         self.importance_scores = self.compute_importance_scores()
 
         # Use importance scores instead of raw confidence
