@@ -688,12 +688,13 @@ class CoCoVinTrainer(BaseTrainer):
     def compute_importance_scores(self):
         """
         Compute node importance scores based on soft agreement between
-        phase 1 and current predictions using KL divergence.
+        phase 1 and current predictions using cosine similarity.
 
-        Score: w_i = exp(-KL(p_i^(1) || p_i^(2)))
+        Score: w_i = cos_sim(p_i^(1), p_i^(2)) = <p_i^(1), p_i^(2)>/(||p_i^(1)||·||p_i^(2)||)
         """
         if self.phase1_probs is None:
-            print("???")
+            print("Phase 1 probability distributions not found!")
+            return torch.ones(self.g.num_nodes)  # Fallback to all 1s
 
         # Get current probability distributions
         self.model.eval()
@@ -707,15 +708,23 @@ class CoCoVinTrainer(BaseTrainer):
         phase1_probs = self.phase1_probs.cpu()
         current_probs = current_probs.cpu()
 
-        # Compute KL divergence: KL(phase1_probs || current_probs)
-        # Add small epsilon to avoid log(0)
-        epsilon = 1e-10
-        kl_div = (phase1_probs * (torch.log(phase1_probs + epsilon) -
-                                 torch.log(current_probs + epsilon))).sum(dim=1)
+        # Compute cosine similarity between phase1_probs and current_probs for each node
+        # For each node, we have two probability vectors (one from each phase)
 
-        # Compute importance score: exp(-KL)
-        # This transforms KL divergence (0 to inf, lower is better) to a score (0 to 1, higher is better)
-        importance_scores = torch.exp(-kl_div)
+        # Calculate dot product for each node: <p_i^(1), p_i^(2)>
+        dot_product = torch.sum(phase1_probs * current_probs, dim=1)
+
+        # Calculate norms for each probability vector
+        norm_phase1 = torch.norm(phase1_probs, p=2, dim=1)
+        norm_current = torch.norm(current_probs, p=2, dim=1)
+
+        # Calculate cosine similarity: dot_product / (norm1 * norm2)
+        # Add small epsilon to avoid division by zero
+        epsilon = 1e-10
+        cosine_sim = dot_product / (norm_phase1 * norm_current + epsilon)
+
+        # Scale to [0,1] range (though for probability distributions, should already be positive)
+        importance_scores = torch.clamp(cosine_sim, 0.0, 1.0)
 
         return importance_scores
 
