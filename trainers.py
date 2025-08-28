@@ -687,10 +687,11 @@ class CoCoVinTrainer(BaseTrainer):
 
     def compute_importance_scores(self):
         """
-        Compute node importance scores based on soft agreement between
-        phase 1 and current predictions using cosine similarity.
+        Compute node importance scores based on confidence gain between phases.
 
-        Score: w_i = cos_sim(p_i^(1), p_i^(2)) = <p_i^(1), p_i^(2)>/(||p_i^(1)||·||p_i^(2)||)
+        Define: g_i = max p^(2)_i - max p^(1)_i
+        Score: w_i = (g_i - g_min)/(g_max - g_min)
+        Description: Prioritize nodes that became more confident after stage 2
         """
         if self.phase1_probs is None:
             print("Phase 1 probability distributions not found!")
@@ -708,25 +709,25 @@ class CoCoVinTrainer(BaseTrainer):
         phase1_probs = self.phase1_probs.cpu()
         current_probs = current_probs.cpu()
 
-        # Compute cosine similarity between phase1_probs and current_probs for each node
-        # For each node, we have two probability vectors (one from each phase)
+        # Get maximum probability for each node from both phases
+        max_prob_phase1 = torch.max(phase1_probs, dim=1)[0]  # [0] to get values, not indices
+        max_prob_current = torch.max(current_probs, dim=1)[0]
 
-        # Calculate dot product for each node: <p_i^(1), p_i^(2)>
-        dot_product = torch.sum(phase1_probs * current_probs, dim=1)
+        # Calculate confidence gain
+        confidence_gain = max_prob_current - max_prob_phase1
 
-        # Calculate norms for each probability vector
-        norm_phase1 = torch.norm(phase1_probs, p=2, dim=1)
-        norm_current = torch.norm(current_probs, p=2, dim=1)
+        # Min-max normalization to scale to [0,1]
+        gain_min = confidence_gain.min()
+        gain_max = confidence_gain.max()
 
-        # Calculate cosine similarity: dot_product / (norm1 * norm2)
-        # Add small epsilon to avoid division by zero
-        epsilon = 1e-10
-        cosine_sim = dot_product / (norm_phase1 * norm_current + epsilon)
+        # Handle edge case where all gains are identical
+        if gain_max == gain_min:
+            return torch.ones(self.g.num_nodes)
 
-        # Scale to [0,1] range (though for probability distributions, should already be positive)
-        importance_scores = torch.clamp(cosine_sim, 0.0, 1.0)
+        # Normalize gain to [0,1] range
+        normalized_gain = (confidence_gain - gain_min) / (gain_max - gain_min)
 
-        return importance_scores
+        return normalized_gain
 
     # --- Include all helper methods from ViolinTrainer ---
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
