@@ -447,7 +447,7 @@ class CoCoVinTrainer(BaseTrainer):
         self.test_losses = []
         self.test_accs = []
 
-        self.phase1_preds = None  # To store predictions after CoCoS phase
+        self.phase1_probs = None  # To store probability distributions after CoCoS phase
         self.importance_scores = None  # To store node importance scores
 
     def load_pretr_model(self):
@@ -484,18 +484,16 @@ class CoCoVinTrainer(BaseTrainer):
         print(f"Training metrics saved to {excel_path}")
 
     def save_phase1_predictions(self):
-        """Save current model predictions at the end of CoCoS phase"""
+        """Save current model probability distributions at the end of CoCoS phase"""
         self.model.eval()
         with torch.set_grad_enabled(False):
             x_data = self.g.x.to(self.info_dict['device'])
             edge_index = self.ori_edge_index.to(self.info_dict['device'])
             logits = self.model(x_data, edge_index)
 
-            # Get predictions
-            _, preds = torch.max(logits, dim=1)
-            self.phase1_preds = preds.clone()
-
-            print("Phase 1 (CoCoS) predictions saved for stability scoring")
+            # Save full probability distributions instead of just predictions
+            self.phase1_probs = F.softmax(logits, dim=1).clone()
+            print("Phase 1 (CoCoS) probability distributions saved for stability scoring")
 
     def train(self):
         for i in range(self.info_dict['n_epochs']):
@@ -687,41 +685,37 @@ class CoCoVinTrainer(BaseTrainer):
 
         return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
-    def compute_importance_scores(self, current_preds, current_conf, threshold=0.0):
+    def compute_importance_scores(self):
         """
-        Compute node importance scores based on hard-label agreement between
-        phase 1 and current predictions.
+        Compute node importance scores based on soft agreement between
+        phase 1 and current predictions using KL divergence.
 
-        Args:
-            current_preds: Current model predictions
-            current_conf: Current model confidence scores
-            threshold: Confidence threshold for full weight (default 0.0)
-
-        Returns:
-            importance_scores: Node importance scores
+        Score: w_i = exp(-KL(p_i^(1) || p_i^(2)))
         """
-        if self.phase1_preds is None:
-            return current_conf  # Fallback to confidence if phase 1 predictions aren't available
+        if self.phase1_probs is None:
+            print("???")
 
-        # Move tensors to CPU for comparison
-        phase1_preds = self.phase1_preds.cpu()
-        current_preds = current_preds.cpu()
-        current_conf = current_conf.cpu()
+        # Get current probability distributions
+        self.model.eval()
+        with torch.set_grad_enabled(False):
+            x_data = self.g.x.to(self.info_dict['device'])
+            edge_index = self.ori_edge_index.to(self.info_dict['device'])
+            logits = self.model(x_data, edge_index)
+            current_probs = F.softmax(logits, dim=1)
 
-        # Initialize scores
-        importance_scores = torch.zeros_like(current_conf)
+        # Move tensors to CPU for computation
+        phase1_probs = self.phase1_probs.cpu()
+        current_probs = current_probs.cpu()
 
-        # Case 1: Labels match and confidence >= threshold
-        match_high_conf = (phase1_preds == current_preds) & (current_conf >= threshold)
-        importance_scores[match_high_conf] = 1.0
+        # Compute KL divergence: KL(phase1_probs || current_probs)
+        # Add small epsilon to avoid log(0)
+        epsilon = 1e-10
+        kl_div = (phase1_probs * (torch.log(phase1_probs + epsilon) -
+                                 torch.log(current_probs + epsilon))).sum(dim=1)
 
-        # Case 2: Labels match but confidence < threshold
-        match_low_conf = (phase1_preds == current_preds) & (current_conf < threshold)
-        importance_scores[match_low_conf] = 0.5
-
-        # Case 3: Labels don't match
-        no_match = (phase1_preds != current_preds)
-        importance_scores[no_match] = 0.1
+        # Compute importance score: exp(-KL)
+        # This transforms KL divergence (0 to inf, lower is better) to a score (0 to 1, higher is better)
+        importance_scores = torch.exp(-kl_div)
 
         return importance_scores
 
@@ -737,11 +731,7 @@ class CoCoVinTrainer(BaseTrainer):
         # conf_mask = conf >= self.conf_thrs
 
         # Compute importance scores based on hard-label agreement
-        self.importance_scores = self.compute_importance_scores(
-            self.pred_labels,
-            conf,
-            threshold=0.0  # Default threshold
-        )
+        self.importance_scores = self.compute_importance_scores()
 
         # Use importance scores instead of raw confidence
         conf_mask = self.importance_scores >= self.conf_thrs
