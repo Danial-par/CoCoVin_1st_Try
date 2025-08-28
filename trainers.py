@@ -500,7 +500,7 @@ class CoCoVinTrainer(BaseTrainer):
 
     def update_prediction_memory(self):
         """
-        Store current model predictions in the memory bank.
+        Store current model probability distributions in the memory bank.
         Maintains a FIFO queue of fixed size.
         """
         self.model.eval()
@@ -509,14 +509,14 @@ class CoCoVinTrainer(BaseTrainer):
             edge_index = self.ori_edge_index.to(self.info_dict['device'])
             logits = self.model(x_data, edge_index)
 
-            # Get predicted classes
-            _, preds = torch.max(logits, dim=1)
+            # Get full probability distributions
+            probs = F.softmax(logits, dim=1)
 
             # Move to CPU for storage
-            current_preds = preds.cpu()
+            current_probs = probs.cpu()
 
             # Add to memory bank
-            self.prediction_memory.append(current_preds)
+            self.prediction_memory.append(current_probs)
 
             # Keep only the most recent predictions
             if len(self.prediction_memory) > self.memory_size:
@@ -720,36 +720,45 @@ class CoCoVinTrainer(BaseTrainer):
 
     def compute_importance_scores(self):
         """
-        Compute node importance scores based on label stability across predictions.
+        Compute node importance scores based on entropy of averaged probability distributions.
 
-        Score: w_i = (1/|M|) * max_k sum_{t=1}^{|M|} 1{y^(t)_i = k}
-        Description: Higher score means more stable predictions over time
+        1. Calculate average probability: p̄_i = (1/|M|)∑p_i^(t)
+        2. Calculate entropy: H(p̄_i)
+        3. Normalize by log(C) where C is number of classes
+        4. Return score: w_i = 1 - H(p̄_i)/log(C)
+
+        Higher score means more certain/consistent predictions over time.
         """
         if not hasattr(self, 'prediction_memory') or len(self.prediction_memory) == 0:
             print("Prediction memory is empty! Falling back to uniform weights.")
             return torch.ones(self.g.num_nodes)
 
-        # Convert stored predictions to tensor format
-        # Shape: [memory_size, num_nodes]
-        stored_preds = torch.stack(self.prediction_memory)
+        # Stack probability distributions
+        # Shape: [memory_size, num_nodes, num_classes]
+        stored_probs = torch.stack(self.prediction_memory)
 
-        # Count occurrences of each class for each node
-        num_nodes = self.g.num_nodes
+        # Calculate average probability distribution for each node
+        # Shape: [num_nodes, num_classes]
+        avg_probs = torch.mean(stored_probs, dim=0)
+
+        # Calculate entropy of the average distribution for each node
+        # First, ensure numerical stability by clipping very small probabilities
+        eps = 1e-10
+        avg_probs = torch.clamp(avg_probs, min=eps, max=1.0)
+
+        # Calculate entropy: -sum(p * log(p))
+        entropy = -torch.sum(avg_probs * torch.log(avg_probs), dim=1)
+
+        # Normalize by log(C) where C is number of classes
         num_classes = self.info_dict['out_dim']
-        class_counts = torch.zeros((num_nodes, num_classes))
+        max_entropy = torch.log(torch.tensor(num_classes, dtype=torch.float))
+        normalized_entropy = entropy / max_entropy
 
-        # For each class, count how many times it was predicted for each node
-        for cls_idx in range(num_classes):
-            # Sum over the memory dimension where prediction equals cls_idx
-            class_counts[:, cls_idx] = torch.sum(stored_preds == cls_idx, dim=0).float()
+        # Final score: 1 - normalized_entropy
+        # Higher score means lower entropy (more certainty)
+        importance_scores = 1.0 - normalized_entropy
 
-        # Get the count of the most frequently predicted class for each node
-        max_counts = torch.max(class_counts, dim=1)[0]
-
-        # Normalize by memory size to get frequency (0 to 1 range)
-        stability_scores = max_counts / len(self.prediction_memory)
-
-        return stability_scores
+        return importance_scores
 
     # --- Include all helper methods from ViolinTrainer ---
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
