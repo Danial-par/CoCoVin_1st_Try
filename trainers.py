@@ -450,8 +450,9 @@ class CoCoVinTrainer(BaseTrainer):
         self.phase1_probs = None  # To store probability distributions after CoCoS phase
         self.importance_scores = None  # To store node importance scores
 
-        self.prediction_memory = []  # FIFO queue for storing past predictions
-        self.memory_size = 32  # Size of the prediction memory
+        # Add these lines
+        self.avg_probs = None  # For EMA-based tracking of probabilities
+        self.ema_alpha = 0.1  # EMA smoothing factor (adjust as needed)
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -498,10 +499,10 @@ class CoCoVinTrainer(BaseTrainer):
             self.phase1_probs = F.softmax(logits, dim=1).clone()
             print("Phase 1 (CoCoS) probability distributions saved for stability scoring")
 
-    def update_prediction_memory(self):
+    def update_avg_probs(self):
         """
-        Store current model probability distributions in the memory bank.
-        Maintains a FIFO queue of fixed size.
+        Update the exponential moving average of probability distributions.
+        avg_probs = alpha * current_probs + (1 - alpha) * avg_probs
         """
         self.model.eval()
         with torch.set_grad_enabled(False):
@@ -509,20 +510,20 @@ class CoCoVinTrainer(BaseTrainer):
             edge_index = self.ori_edge_index.to(self.info_dict['device'])
             logits = self.model(x_data, edge_index)
 
-            # Get full probability distributions
-            probs = F.softmax(logits, dim=1)
+            # Get current probability distribution
+            current_probs = F.softmax(logits, dim=1)
 
             # Move to CPU for storage
-            current_probs = probs.cpu()
+            current_probs = current_probs.cpu()
 
-            # Add to memory bank
-            self.prediction_memory.append(current_probs)
+            # Initialize avg_probs if first run
+            if self.avg_probs is None:
+                self.avg_probs = current_probs.clone()
+            else:
+                # Update running average using EMA formula
+                self.avg_probs = self.ema_alpha * current_probs + (1 - self.ema_alpha) * self.avg_probs
 
-            # Keep only the most recent predictions
-            if len(self.prediction_memory) > self.memory_size:
-                self.prediction_memory.pop(0)  # Remove oldest entry
-
-        print(f"Updated prediction memory. Current size: {len(self.prediction_memory)}/{self.memory_size}")
+        print(f"Updated probability EMA with alpha={self.ema_alpha}")
 
     def train(self):
         for i in range(self.info_dict['n_epochs']):
@@ -533,14 +534,14 @@ class CoCoVinTrainer(BaseTrainer):
             if i < self.phase1_epochs and i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
                     self.get_pred_labels()
-                # Update prediction memory
-                self.update_prediction_memory()
+                # Update EMA probabilities
+                self.update_avg_probs()
 
             elif i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
                     self.get_pred_labels()
-                # Update prediction memory
-                self.update_prediction_memory()
+                # Update EMA probabilities
+                self.update_avg_probs()
                 self.add_VOs()
 
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
@@ -720,26 +721,21 @@ class CoCoVinTrainer(BaseTrainer):
 
     def compute_importance_scores(self):
         """
-        Compute node importance scores based on entropy of averaged probability distributions.
+        Compute node importance scores based on entropy of EMA probability distributions.
 
-        1. Calculate average probability: p̄_i = (1/|M|)∑p_i^(t)
+        1. Use the maintained EMA probability: p̄_i
         2. Calculate entropy: H(p̄_i)
         3. Normalize by log(C) where C is number of classes
         4. Return score: w_i = 1 - H(p̄_i)/log(C)
 
         Higher score means more certain/consistent predictions over time.
         """
-        if not hasattr(self, 'prediction_memory') or len(self.prediction_memory) == 0:
-            print("Prediction memory is empty! Falling back to uniform weights.")
+        if self.avg_probs is None:
+            print("Average probabilities not initialized! Falling back to uniform weights.")
             return torch.ones(self.g.num_nodes)
 
-        # Stack probability distributions
-        # Shape: [memory_size, num_nodes, num_classes]
-        stored_probs = torch.stack(self.prediction_memory)
-
-        # Calculate average probability distribution for each node
-        # Shape: [num_nodes, num_classes]
-        avg_probs = torch.mean(stored_probs, dim=0)
+        # Use the EMA-based average probabilities
+        avg_probs = self.avg_probs
 
         # Calculate entropy of the average distribution for each node
         # First, ensure numerical stability by clipping very small probabilities
