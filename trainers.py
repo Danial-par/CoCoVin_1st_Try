@@ -523,8 +523,6 @@ class CoCoVinTrainer(BaseTrainer):
                 # Update running average using EMA formula
                 self.avg_probs = self.ema_alpha * current_probs + (1 - self.ema_alpha) * self.avg_probs
 
-        print(f"Updated probability EMA with alpha={self.ema_alpha}")
-
     def train(self):
         for i in range(self.info_dict['n_epochs']):
             # Save predictions at the transition between phases
@@ -765,13 +763,13 @@ class CoCoVinTrainer(BaseTrainer):
         '''
         labels = self.pred_labels.cpu()
         conf = self.pred_conf.cpu()
-        # conf_mask = conf >= self.conf_thrs
+        conf_mask = conf >= self.conf_thrs
 
-        # Compute importance scores
-        self.importance_scores = self.compute_importance_scores()
-
-        # Use importance scores instead of raw confidence
-        conf_mask = self.importance_scores >= self.conf_thrs
+        # # Compute importance scores
+        # self.importance_scores = self.compute_importance_scores()
+        #
+        # # Use importance scores instead of raw confidence
+        # conf_mask = self.importance_scores >= self.conf_thrs
 
         ori_adj = self.ori_edge_index
         # print('The number of edges before adding virtual links: {}'.format(ori_adj.shape[1]))
