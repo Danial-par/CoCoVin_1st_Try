@@ -435,6 +435,11 @@ class CoCoVinTrainer(BaseTrainer):
                                           lr=info_dict['lr_cocos'],
                                           weight_decay=info_dict['weight_decay'])
 
+        # optimizer for the unified training
+        self.unified_opt = torch.optim.Adam([
+            {'params': self.model.parameters()},
+            {'params': self.Dis.parameters()}
+        ], lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
 
         # Add phase tracking for sequential training
         self.phase1_epochs = self.info_dict['n_epochs'] // 2  # First 1/2 for CoCoS only
@@ -453,8 +458,6 @@ class CoCoVinTrainer(BaseTrainer):
         # Add these lines
         self.avg_probs = None  # For EMA-based tracking of probabilities
         self.ema_alpha = 0.1  # EMA smoothing factor (adjust as needed)
-
-        self.virt_edge_weights = None  # To store importance weights for each VO edge
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -527,28 +530,21 @@ class CoCoVinTrainer(BaseTrainer):
 
     def train(self):
         for i in range(self.info_dict['n_epochs']):
-            # Save predictions at the transition between phases
-            if i == self.phase1_epochs:
-                self.save_phase1_predictions()
-
-            if i < self.phase1_epochs and i % self.info_dict['eta'] == 0:
+            # Get predictions for both methods on regular intervals
+            if i % self.info_dict['eta'] == 0:
                 if self.pred_label_flag:
                     self.get_pred_labels()
                 # Update EMA probabilities
                 self.update_avg_probs()
-
-            elif i >= self.phase1_epochs and i % self.info_dict['eta'] == 0:
-                if self.pred_label_flag:
-                    self.get_pred_labels()
-                # Update EMA probabilities
-                self.update_avg_probs()
+                # Add virtual links for Violin
                 self.add_VOs()
 
-            tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch(i)
+            # Train using unified approach (both methods together)
+            tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch_unified(i)
             (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
             (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
 
-            # append training metrics
+            # Rest of the code remains the same
             self.train_losses.append(tr_loss_epoch)
             self.train_accs.append(tr_acc)
             self.val_losses.append(val_loss_epoch)
@@ -578,14 +574,8 @@ class CoCoVinTrainer(BaseTrainer):
         return self.best_val_acc, self.best_tt_acc, val_acc_epoch, tt_acc_epoch, self.best_microf1, self.best_macrof1
 
     def train_epoch(self, epoch_i):
-        if epoch_i < self.phase1_epochs:
-            # Phase 1: CoCoS only
-            return self.train_epoch_cocos_only(epoch_i)
-        else:
-            # Phase 2: Violin only - but we need predicted labels first
-            if self.pred_labels is None:
-                self.get_pred_labels()  # Get initial predictions for Violin
-            return self.train_epoch_violin_only(epoch_i)
+        # Use the unified approach for all epochs
+        return self.train_epoch_unified(epoch_i)
 
     def train_epoch_cocos_only(self, epoch_i):
         # Classification + CoCoS contrastive loss only
@@ -667,6 +657,7 @@ class CoCoVinTrainer(BaseTrainer):
             x_data = self.g.x.to(self.info_dict['device'])
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
             aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
+            virt_edge_index = self.virt_edge_index.to(self.info_dict['device'])
 
             # Process original graph first
             ori_logits = self.model(x_data, ori_edge_index)
@@ -681,30 +672,10 @@ class CoCoVinTrainer(BaseTrainer):
             aug_logits = self.model(x_data, aug_edge_index)
             aug_conf = torch.softmax(aug_logits, dim=1)
 
-            # Consistency loss
+            # Violin losses
             epoch_con_loss = torch.abs(ori_conf[con_nids] - aug_conf[con_nids]).sum(dim=1).mean()
-
-            # Dynamic VO Loss - weight by importance scores
-            if self.virt_edge_index is not None and self.virt_edge_weights is not None:
-                virt_edge_index = self.virt_edge_index.to(self.info_dict['device'])
-                virt_edge_weights = self.virt_edge_weights.to(self.info_dict['device'])
-
-                num_unq_vls = virt_edge_index.shape[1] // 2
-
-                # Compute raw differences between connected nodes
-                edge_diffs = torch.abs(
-                    aug_conf[virt_edge_index[0, :num_unq_vls]] -
-                    aug_conf[virt_edge_index[1, :num_unq_vls]]
-                ).sum(dim=1)
-
-                # Apply importance weights to the differences
-                weighted_diffs = edge_diffs * virt_edge_weights[:num_unq_vls]
-
-                # Mean of weighted differences
-                epoch_vl_loss = weighted_diffs.mean()
-            else:
-                # No virtual edges, no loss
-                epoch_vl_loss = torch.tensor(0.0).to(self.info_dict['device'])
+            num_unq_vls = virt_edge_index.shape[1] // 2
+            epoch_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] - aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
 
             # Classification loss - recompute logits only when needed
             if self.info_dict['cls_mode'] == 'ori':
@@ -717,8 +688,7 @@ class CoCoVinTrainer(BaseTrainer):
                 _, preds = torch.max(aug_logits[cls_nids], dim=1)
             elif self.info_dict['cls_mode'] == 'both':
                 ori_logits_cls = self.model(x_data, ori_edge_index)
-                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits_cls[cls_nids], cls_labels) +
-                                      self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
+                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits_cls[cls_nids], cls_labels) + self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
                 _, preds = torch.max((ori_logits_cls + aug_logits)[cls_nids], dim=1)
                 del ori_logits_cls
 
@@ -729,6 +699,154 @@ class CoCoVinTrainer(BaseTrainer):
             epoch_loss.backward()
             self.violin_opt.step()
 
+            epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
+            epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
+            epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
+
+            # Final cleanup
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
+
+    def train_epoch_unified(self, epoch_i):
+        # Setup common variables
+        cls_nids = self.tr_nid
+        cls_labels = self.tr_y.to(self.info_dict['device'])
+        con_nids = torch.cat((self.val_nid, self.tt_nid))
+
+        # CoCoS specific variables
+        ctr_labels_pos = torch.ones_like(con_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
+        ctr_labels_neg = torch.zeros_like(con_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
+
+        # Clear CUDA cache at the beginning
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        self.model.train()
+        self.Dis.train()  # Make sure discriminator is in train mode
+
+        with torch.set_grad_enabled(True):
+            x_data = self.g.x.to(self.info_dict['device'])
+
+            # Get original graph edges and augmented graph edges (Violin)
+            ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
+            aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
+            virt_edge_index = self.virt_edge_index.to(self.info_dict['device']) if self.virt_edge_index is not None else None
+
+            # === Process original graph ===
+            ori_logits = self.model(x_data, ori_edge_index)
+            ori_conf = torch.softmax(ori_logits, dim=1)
+
+            # === Process Violin-augmented graph (with virtual edges) ===
+            aug_logits = self.model(x_data, aug_edge_index) if virt_edge_index is not None else ori_logits
+            aug_conf = torch.softmax(aug_logits, dim=1) if virt_edge_index is not None else ori_conf
+
+            # === Process CoCoS-augmented graph (feature shuffling) ===
+            # Feature-shuffled view for CoCoS
+            shuf_feat = self.shuffle_feat(x_data)
+            shuf_logits = self.model(shuf_feat, ori_edge_index)
+
+            # === Generate CoCoS positive/negative samples ===
+            pos_nids = self.shuffle_nids()
+            tp_ori_logits = ori_logits[pos_nids]
+            tp_shuf_logits = shuf_logits[pos_nids]
+            neg_nids = self.gen_neg_nids()
+            neg_ori_logits = ori_logits[neg_nids].detach()
+
+            # === Classification Loss (supports 8 modes: O, V, C, OV, OC, VC, OVC) ===
+            # O = Original, V = Violin-augmented, C = CoCoS-augmented
+            cls_mode = self.info_dict.get('cls_mode', 'VO')  # Default to VO (Violin+Original)
+
+            # Initialize loss and logits variables
+            epoch_cls_loss = 0.0
+            total_logits = None
+            num_components = 0
+
+            # Convert cls_mode to lowercase for case-insensitive comparison
+            cls_mode_lower = cls_mode.lower()
+
+            # Check for each component and add its loss
+            if 'o' in cls_mode_lower:
+                # Add Original loss
+                epoch_cls_loss += self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                total_logits = ori_logits if total_logits is None else total_logits + ori_logits
+                num_components += 1
+
+            if 'v' in cls_mode_lower:
+                # Add Violin-augmented loss
+                epoch_cls_loss += self.crs_entropy_fn(aug_logits[cls_nids], cls_labels)
+                total_logits = aug_logits if total_logits is None else total_logits + aug_logits
+                num_components += 1
+
+            if 'c' in cls_mode_lower:
+                # Add CoCoS-augmented loss
+                epoch_cls_loss += self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
+                total_logits = shuf_logits if total_logits is None else total_logits + shuf_logits
+                num_components += 1
+
+            # Handle the case where no component is specified or invalid mode
+            if num_components == 0:
+                # Default to Original + Violin views if no valid component is specified
+                print(f"Warning: No valid component found in cls_mode '{cls_mode}'. Defaulting to 'OV'.")
+                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
+                                       self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
+                total_logits = ori_logits + aug_logits
+                num_components = 2
+            else:
+                # Average the loss over all components
+                epoch_cls_loss /= num_components
+
+            # Get predictions from the summed logits
+            _, preds = torch.max(total_logits[cls_nids], dim=1)
+
+            # === Violin Losses ===
+            # Only compute if virtual edges exist
+            if virt_edge_index is not None:
+                # Consistency loss
+                epoch_con_loss = torch.abs(ori_conf[con_nids] - aug_conf[con_nids]).sum(dim=1).mean()
+
+                # Virtual link loss
+                num_unq_vls = virt_edge_index.shape[1] // 2
+                epoch_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] -
+                                         aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
+            else:
+                epoch_con_loss = torch.tensor(0.0, device=self.info_dict['device'])
+                epoch_vl_loss = torch.tensor(0.0, device=self.info_dict['device'])
+
+            # === CoCoS Contrastive Loss ===
+            # Positive samples
+            pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
+            pos_loss_f = self.bce_fn(pos_score_f[con_nids], ctr_labels_pos)
+            pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
+            pos_loss_s = self.bce_fn(pos_score_s[con_nids], ctr_labels_pos)
+            epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
+
+            # Negative samples
+            neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
+            epoch_ctr_loss_neg = self.bce_fn(neg_score[con_nids], ctr_labels_neg)
+            epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
+
+            # === Total Loss: Violin + CoCoS ===
+            # Violin loss components
+            violin_loss = epoch_cls_loss
+            if virt_edge_index is not None:
+                violin_loss = violin_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss
+
+            # CoCoS contrastive loss with beta weighting
+            cocos_loss = self.info_dict['beta'] * epoch_ctr_loss
+
+            # Final unified loss
+            epoch_loss = violin_loss + cocos_loss
+
+            # Use a unified optimizer (could be either violin_opt or cocos_opt)
+            # Creating a new unified optimizer would be better but we'll use existing one
+            # Let's use the violin optimizer since it includes all parameters
+            self.violin_opt.zero_grad()
+            epoch_loss.backward()
+            self.violin_opt.step()
+
+            # Calculate metrics
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
             epoch_micro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="micro")
             epoch_macro_f1 = metrics.f1_score(cls_labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
@@ -780,87 +898,69 @@ class CoCoVinTrainer(BaseTrainer):
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
     def add_VOs(self):
         '''
-        Add virtual links based on the predicted class labels, but keep all links
-        and compute importance weights for each link
+        add virtual links based on the ground-truth class labels, within the whole graph
+        :return:
         '''
         labels = self.pred_labels.cpu()
+        conf = self.pred_conf.cpu()
+        conf_mask = conf >= self.conf_thrs
 
-        # Compute importance scores for all nodes
-        self.importance_scores = self.compute_importance_scores()
+        # # Compute importance scores
+        # self.importance_scores = self.compute_importance_scores()
+        #
+        # # Use importance scores instead of raw confidence
+        # conf_mask = self.importance_scores >= self.conf_thrs
 
         ori_adj = self.ori_edge_index
+        # print('The number of edges before adding virtual links: {}'.format(ori_adj.shape[1]))
 
-        # Number of virtual links to be added for each node
+        # number of virtual links to be added for each node
         n_vo = self.info_dict['m']
         virt_edges = []
-        virt_edge_weights = []  # Store weights for each edge
-
         tr_mask = self.g.train_mask.bool()
         other_mask = ~tr_mask
 
-        # Construct virtual links
+        # construct virtual links
         label_list = list(set(labels.numpy().tolist()))
         for i in range(n_vo):
             dsts = torch.arange(self.g.num_nodes)
             srcs = -1 * torch.ones_like(dsts)
-
             for k in label_list:
-                # The indices of nodes that are from the k-th class
+                # the indices of nodes that are from the k-th class
                 k_mask = labels == k
-                tr_k_mask = k_mask * tr_mask  # Training nodes in the k-th class
-                other_k_mask = k_mask * other_mask  # Unlabeled nodes predicted as k-th class
+                tr_k_mask = k_mask * tr_mask  # training nodes in the k-th class
+                other_k_mask = k_mask * other_mask  # unlabeled nodes that predicted to be in the k-th class
 
-                # Add virtual links for labeled nodes
+                # add virtual links for labeled nodes
+                # randomly select nodes from the whole graph
                 tr_vl_k_idx = torch.arange(self.g.num_nodes)[k_mask]
-                if tr_k_mask.sum().item() > 0:  # Check to avoid empty selection
-                    tr_vl_rand_idx = torch.from_numpy(np.random.choice(tr_vl_k_idx, tr_k_mask.sum().item(), replace=True))
-                    srcs[tr_k_mask] = tr_vl_rand_idx
+                tr_vl_rand_idx = torch.from_numpy(np.random.choice(tr_vl_k_idx, tr_k_mask.sum().item(), replace=True))
+                srcs[tr_k_mask] = tr_vl_rand_idx
 
-                # Add virtual links for unlabeled nodes
+                # add virtual links for the unlabeled nodes
                 other_vl_k_idx = torch.arange(self.g.num_nodes)[k_mask]
-                if other_k_mask.sum().item() > 0:  # Check to avoid empty selection
-                    other_vl_rand_idx = torch.from_numpy(np.random.choice(other_vl_k_idx, other_k_mask.sum().item(), replace=True))
-                    srcs[other_k_mask] = other_vl_rand_idx
+                other_vl_rand_idx = torch.from_numpy(np.random.choice(other_vl_k_idx, other_k_mask.sum().item(),
+                                                                    replace=True))
+                srcs[other_k_mask] = other_vl_rand_idx
 
-            # Keep only valid edges (those with assigned source)
-            valid_mask = srcs >= 0
-            valid_srcs = srcs[valid_mask]
-            valid_dsts = dsts[valid_mask]
+            # qualified edges
+            qua_mask = srcs >= 0
+            qua_mask = conf_mask * qua_mask
+            srcs = srcs[qua_mask]
+            dsts = dsts[qua_mask]
 
-            if len(valid_srcs) > 0:  # Ensure we have valid edges
-                # Create edge tensor
-                vl_i = torch.cat([valid_srcs.unsqueeze(0), valid_dsts.unsqueeze(0)], dim=0)
-                virt_edges.append(vl_i)
+            vl_i = torch.cat([srcs.unsqueeze(0), dsts.unsqueeze(0)], dim=0)
+            virt_edges.append(vl_i)
 
-                # Compute edge weights based on minimum importance score of endpoints
-                src_importance = self.importance_scores[valid_srcs]
-                dst_importance = self.importance_scores[valid_dsts]
-                edge_weights = torch.min(src_importance, dst_importance)
-                virt_edge_weights.append(edge_weights)
+        virt_edges = torch.cat(virt_edges, dim=1)
+        rev_virt_edges = torch.cat([virt_edges[1].unsqueeze(0), virt_edges[0].unsqueeze(0)], dim=0)
+        full_virt_edges = torch.cat((virt_edges, rev_virt_edges), dim=1)
 
-        if len(virt_edges) > 0:
-            virt_edges = torch.cat(virt_edges, dim=1)
-            virt_edge_weights = torch.cat(virt_edge_weights)
-
-            # Create reverse edges with same weights
-            rev_virt_edges = torch.cat([virt_edges[1].unsqueeze(0), virt_edges[0].unsqueeze(0)], dim=0)
-            full_virt_edges = torch.cat((virt_edges, rev_virt_edges), dim=1)
-
-            # Duplicate weights for reverse edges
-            full_virt_weights = torch.cat((virt_edge_weights, virt_edge_weights))
-
-            # Store weights for loss computation
-            self.virt_edge_weights = full_virt_weights
-
-            # Add edges to graph
-            cur_adj = torch.cat((ori_adj, full_virt_edges), dim=1)
-            cur_adj = pyg.utils.coalesce(cur_adj)
-            self.g.edge_index = cur_adj
-            self.virt_edge_index = full_virt_edges
-        else:
-            # No virtual edges added
-            self.virt_edge_index = None
-            self.virt_edge_weights = None
+        cur_adj = torch.cat((ori_adj, full_virt_edges), dim=1)
+        cur_adj = pyg.utils.coalesce(cur_adj)
+        # print('The number of edges after adding virtual links: {}'.format(cur_adj.shape[1]))
+        self.g.edge_index = cur_adj
+        self.virt_edge_index = full_virt_edges
 
     def eval_epoch(self, epoch_i):
         tic = time.time()
