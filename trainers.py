@@ -454,6 +454,8 @@ class CoCoVinTrainer(BaseTrainer):
         self.avg_probs = None  # For EMA-based tracking of probabilities
         self.ema_alpha = 0.1  # EMA smoothing factor (adjust as needed)
 
+        self.virt_edge_weights = None  # To store importance weights for each VO edge
+
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
 
@@ -665,7 +667,6 @@ class CoCoVinTrainer(BaseTrainer):
             x_data = self.g.x.to(self.info_dict['device'])
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
             aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
-            virt_edge_index = self.virt_edge_index.to(self.info_dict['device'])
 
             # Process original graph first
             ori_logits = self.model(x_data, ori_edge_index)
@@ -680,10 +681,30 @@ class CoCoVinTrainer(BaseTrainer):
             aug_logits = self.model(x_data, aug_edge_index)
             aug_conf = torch.softmax(aug_logits, dim=1)
 
-            # Violin losses
+            # Consistency loss
             epoch_con_loss = torch.abs(ori_conf[con_nids] - aug_conf[con_nids]).sum(dim=1).mean()
-            num_unq_vls = virt_edge_index.shape[1] // 2
-            epoch_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] - aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
+
+            # Dynamic VO Loss - weight by importance scores
+            if self.virt_edge_index is not None and self.virt_edge_weights is not None:
+                virt_edge_index = self.virt_edge_index.to(self.info_dict['device'])
+                virt_edge_weights = self.virt_edge_weights.to(self.info_dict['device'])
+
+                num_unq_vls = virt_edge_index.shape[1] // 2
+
+                # Compute raw differences between connected nodes
+                edge_diffs = torch.abs(
+                    aug_conf[virt_edge_index[0, :num_unq_vls]] -
+                    aug_conf[virt_edge_index[1, :num_unq_vls]]
+                ).sum(dim=1)
+
+                # Apply importance weights to the differences
+                weighted_diffs = edge_diffs * virt_edge_weights[:num_unq_vls]
+
+                # Mean of weighted differences
+                epoch_vl_loss = weighted_diffs.mean()
+            else:
+                # No virtual edges, no loss
+                epoch_vl_loss = torch.tensor(0.0).to(self.info_dict['device'])
 
             # Classification loss - recompute logits only when needed
             if self.info_dict['cls_mode'] == 'ori':
@@ -696,7 +717,8 @@ class CoCoVinTrainer(BaseTrainer):
                 _, preds = torch.max(aug_logits[cls_nids], dim=1)
             elif self.info_dict['cls_mode'] == 'both':
                 ori_logits_cls = self.model(x_data, ori_edge_index)
-                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits_cls[cls_nids], cls_labels) + self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
+                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits_cls[cls_nids], cls_labels) +
+                                      self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
                 _, preds = torch.max((ori_logits_cls + aug_logits)[cls_nids], dim=1)
                 del ori_logits_cls
 
@@ -758,69 +780,87 @@ class CoCoVinTrainer(BaseTrainer):
     # add_VOs, eval_epoch, get_pred_labels, set_conf_thrs
     def add_VOs(self):
         '''
-        add virtual links based on the ground-truth class labels, within the whole graph
-        :return:
+        Add virtual links based on the predicted class labels, but keep all links
+        and compute importance weights for each link
         '''
         labels = self.pred_labels.cpu()
-        conf = self.pred_conf.cpu()
-        conf_mask = conf >= self.conf_thrs
 
-        # # Compute importance scores
-        # self.importance_scores = self.compute_importance_scores()
-        #
-        # # Use importance scores instead of raw confidence
-        # conf_mask = self.importance_scores >= self.conf_thrs
+        # Compute importance scores for all nodes
+        self.importance_scores = self.compute_importance_scores()
 
         ori_adj = self.ori_edge_index
-        # print('The number of edges before adding virtual links: {}'.format(ori_adj.shape[1]))
 
-        # number of virtual links to be added for each node
+        # Number of virtual links to be added for each node
         n_vo = self.info_dict['m']
         virt_edges = []
+        virt_edge_weights = []  # Store weights for each edge
+
         tr_mask = self.g.train_mask.bool()
         other_mask = ~tr_mask
 
-        # construct virtual links
+        # Construct virtual links
         label_list = list(set(labels.numpy().tolist()))
         for i in range(n_vo):
             dsts = torch.arange(self.g.num_nodes)
             srcs = -1 * torch.ones_like(dsts)
+
             for k in label_list:
-                # the indices of nodes that are from the k-th class
+                # The indices of nodes that are from the k-th class
                 k_mask = labels == k
-                tr_k_mask = k_mask * tr_mask  # training nodes in the k-th class
-                other_k_mask = k_mask * other_mask  # unlabeled nodes that predicted to be in the k-th class
+                tr_k_mask = k_mask * tr_mask  # Training nodes in the k-th class
+                other_k_mask = k_mask * other_mask  # Unlabeled nodes predicted as k-th class
 
-                # add virtual links for labeled nodes
-                # randomly select nodes from the whole graph
+                # Add virtual links for labeled nodes
                 tr_vl_k_idx = torch.arange(self.g.num_nodes)[k_mask]
-                tr_vl_rand_idx = torch.from_numpy(np.random.choice(tr_vl_k_idx, tr_k_mask.sum().item(), replace=True))
-                srcs[tr_k_mask] = tr_vl_rand_idx
+                if tr_k_mask.sum().item() > 0:  # Check to avoid empty selection
+                    tr_vl_rand_idx = torch.from_numpy(np.random.choice(tr_vl_k_idx, tr_k_mask.sum().item(), replace=True))
+                    srcs[tr_k_mask] = tr_vl_rand_idx
 
-                # add virtual links for the unlabeled nodes
+                # Add virtual links for unlabeled nodes
                 other_vl_k_idx = torch.arange(self.g.num_nodes)[k_mask]
-                other_vl_rand_idx = torch.from_numpy(np.random.choice(other_vl_k_idx, other_k_mask.sum().item(),
-                                                                    replace=True))
-                srcs[other_k_mask] = other_vl_rand_idx
+                if other_k_mask.sum().item() > 0:  # Check to avoid empty selection
+                    other_vl_rand_idx = torch.from_numpy(np.random.choice(other_vl_k_idx, other_k_mask.sum().item(), replace=True))
+                    srcs[other_k_mask] = other_vl_rand_idx
 
-            # qualified edges
-            qua_mask = srcs >= 0
-            qua_mask = conf_mask * qua_mask
-            srcs = srcs[qua_mask]
-            dsts = dsts[qua_mask]
+            # Keep only valid edges (those with assigned source)
+            valid_mask = srcs >= 0
+            valid_srcs = srcs[valid_mask]
+            valid_dsts = dsts[valid_mask]
 
-            vl_i = torch.cat([srcs.unsqueeze(0), dsts.unsqueeze(0)], dim=0)
-            virt_edges.append(vl_i)
+            if len(valid_srcs) > 0:  # Ensure we have valid edges
+                # Create edge tensor
+                vl_i = torch.cat([valid_srcs.unsqueeze(0), valid_dsts.unsqueeze(0)], dim=0)
+                virt_edges.append(vl_i)
 
-        virt_edges = torch.cat(virt_edges, dim=1)
-        rev_virt_edges = torch.cat([virt_edges[1].unsqueeze(0), virt_edges[0].unsqueeze(0)], dim=0)
-        full_virt_edges = torch.cat((virt_edges, rev_virt_edges), dim=1)
+                # Compute edge weights based on minimum importance score of endpoints
+                src_importance = self.importance_scores[valid_srcs]
+                dst_importance = self.importance_scores[valid_dsts]
+                edge_weights = torch.min(src_importance, dst_importance)
+                virt_edge_weights.append(edge_weights)
 
-        cur_adj = torch.cat((ori_adj, full_virt_edges), dim=1)
-        cur_adj = pyg.utils.coalesce(cur_adj)
-        # print('The number of edges after adding virtual links: {}'.format(cur_adj.shape[1]))
-        self.g.edge_index = cur_adj
-        self.virt_edge_index = full_virt_edges
+        if len(virt_edges) > 0:
+            virt_edges = torch.cat(virt_edges, dim=1)
+            virt_edge_weights = torch.cat(virt_edge_weights)
+
+            # Create reverse edges with same weights
+            rev_virt_edges = torch.cat([virt_edges[1].unsqueeze(0), virt_edges[0].unsqueeze(0)], dim=0)
+            full_virt_edges = torch.cat((virt_edges, rev_virt_edges), dim=1)
+
+            # Duplicate weights for reverse edges
+            full_virt_weights = torch.cat((virt_edge_weights, virt_edge_weights))
+
+            # Store weights for loss computation
+            self.virt_edge_weights = full_virt_weights
+
+            # Add edges to graph
+            cur_adj = torch.cat((ori_adj, full_virt_edges), dim=1)
+            cur_adj = pyg.utils.coalesce(cur_adj)
+            self.g.edge_index = cur_adj
+            self.virt_edge_index = full_virt_edges
+        else:
+            # No virtual edges added
+            self.virt_edge_index = None
+            self.virt_edge_weights = None
 
     def eval_epoch(self, epoch_i):
         tic = time.time()
