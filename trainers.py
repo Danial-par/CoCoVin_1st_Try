@@ -715,11 +715,16 @@ class CoCoVinTrainer(BaseTrainer):
         cls_labels = self.tr_y.to(self.info_dict['device'])
         con_nids = torch.cat((self.val_nid, self.tt_nid))
 
+        # For CoCoS contrastive loss
+        ctr_labels_pos = torch.ones_like(con_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
+        ctr_labels_neg = torch.zeros_like(con_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
+
         # Clear CUDA cache at the beginning
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         self.model.train()
+        self.Dis.train()
 
         with torch.set_grad_enabled(True):
             x_data = self.g.x.to(self.info_dict['device'])
@@ -727,59 +732,70 @@ class CoCoVinTrainer(BaseTrainer):
             # Get original graph edges and augmented graph edges (Violin)
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
             aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
-            virt_edge_index = self.virt_edge_index.to(self.info_dict['device']) if self.virt_edge_index is not None else None
 
             # === Process original graph ===
             ori_logits = self.model(x_data, ori_edge_index)
-            ori_conf = torch.softmax(ori_logits, dim=1)
 
             # === Create combined view: Feature shuffling on Violin-augmented graph ===
             # Apply feature shuffling to create combined view
             shuf_feat = self.shuffle_feat(x_data)
 
-            # Use shuffled features with augmented edge structure
-            combined_logits = self.model(shuf_feat, aug_edge_index) if virt_edge_index is not None else self.model(shuf_feat, ori_edge_index)
-            combined_conf = torch.softmax(combined_logits, dim=1)
+            # Use shuffled features with augmented edge structure (with virtual edges)
+            combined_logits = self.model(shuf_feat, aug_edge_index)
 
-            # === Classification Loss based on cls_mode ===
-            if self.info_dict['cls_mode'] == 'ori':
-                # Use only original view for classification
-                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
-                _, preds = torch.max(ori_logits[cls_nids], dim=1)
-            elif self.info_dict['cls_mode'] == 'virt':
+            # === Generate positive pairs for the second positive loss ===
+            pos_nids = self.shuffle_nids()
+            tp_combined_logits = combined_logits[pos_nids]
+
+            # === Classification Loss based on cocos_cls_mode ===
+            if self.info_dict['cocos_cls_mode'] == 'shuf':
                 # Use only combined view for classification
                 epoch_cls_loss = self.crs_entropy_fn(combined_logits[cls_nids], cls_labels)
                 _, preds = torch.max(combined_logits[cls_nids], dim=1)
-            elif self.info_dict['cls_mode'] == 'both':
+            elif self.info_dict['cocos_cls_mode'] == 'raw':
+                # Use only original view for classification
+                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                _, preds = torch.max(ori_logits[cls_nids], dim=1)
+            elif self.info_dict['cocos_cls_mode'] == 'both':
                 # Use both views for classification
                 epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
                                         self.crs_entropy_fn(combined_logits[cls_nids], cls_labels))
                 _, preds = torch.max((ori_logits + combined_logits)[cls_nids], dim=1)
             else:
-                # Default case if cls_mode is not recognized
-                raise ValueError(f"Unexpected cls_mode parameter: {self.info_dict['cls_mode']}")
+                # Default case
+                epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
+                _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            # === Violin Losses with combined view ===
-            # Consistency loss between original and combined view
-            epoch_con_loss = torch.abs(ori_conf[con_nids] - combined_conf[con_nids]).sum(dim=1).mean()
+            # === CoCoS Contrastive Losses ===
+            # First positive contrastive loss (F) between original and combined view
+            pos_score_f = self.Dis(torch.cat((combined_logits, ori_logits), dim=-1))
+            pos_loss_f = self.bce_fn(pos_score_f[con_nids], ctr_labels_pos)
 
-            # Virtual link loss on the combined view
-            if virt_edge_index is not None:
-                num_unq_vls = virt_edge_index.shape[1] // 2
-                epoch_vl_loss = torch.abs(combined_conf[virt_edge_index[0, :num_unq_vls]] -
-                                        combined_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
-            else:
-                epoch_vl_loss = torch.tensor(0.0, device=self.info_dict['device'])
+            # Second positive contrastive loss (S) between positive pairs on the combined view
+            pos_score_s = self.Dis(torch.cat((tp_combined_logits, combined_logits), dim=-1))
+            pos_loss_s = self.bce_fn(pos_score_s[con_nids], ctr_labels_pos)
 
-            # === Total Loss: Only Violin losses ===
-            epoch_loss = epoch_cls_loss
-            if virt_edge_index is not None:
-                epoch_loss = epoch_loss + self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss
+            # Average the positive losses
+            epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
+
+            # Generate negative samples
+            neg_nids = self.gen_neg_nids()
+            neg_ori_logits = ori_logits[neg_nids].detach()
+
+            # Negative contrastive loss
+            neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
+            epoch_ctr_loss_neg = self.bce_fn(neg_score[con_nids], ctr_labels_neg)
+
+            # Total contrastive loss
+            epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
+
+            # === Total Loss: Classification + CoCoS contrastive loss ===
+            epoch_loss = epoch_cls_loss + self.info_dict['beta'] * epoch_ctr_loss
 
             # Optimization
-            self.violin_opt.zero_grad()
+            self.cocos_opt.zero_grad()
             epoch_loss.backward()
-            self.violin_opt.step()
+            self.cocos_opt.step()
 
             # Calculate metrics
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
