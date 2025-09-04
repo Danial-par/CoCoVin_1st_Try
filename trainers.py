@@ -460,7 +460,7 @@ class CoCoVinTrainer(BaseTrainer):
         self.ema_alpha = 0.1  # EMA smoothing factor (adjust as needed)
 
         # Confidence thresholds for stability scoring
-        self.high_conf_threshold = info_dict.get('high_conf_threshold', 0.8)  # Default: 0.8
+        self.high_conf_threshold = info_dict.get('high_conf_threshold', 0.85)  # Default: 0.85
         self.low_conf_threshold = info_dict.get('low_conf_threshold', 0.5)    # Default: 0.5
 
     def load_pretr_model(self):
@@ -719,6 +719,9 @@ class CoCoVinTrainer(BaseTrainer):
         cls_labels = self.tr_y.to(self.info_dict['device'])
         con_nids = torch.cat((self.val_nid, self.tt_nid))
 
+        # Add this line to move con_nids to the same device
+        con_nids = con_nids.to(self.info_dict['device'])
+
         # CoCoS specific variables
         ctr_labels_pos = torch.ones_like(con_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
         ctr_labels_neg = torch.zeros_like(con_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
@@ -732,7 +735,7 @@ class CoCoVinTrainer(BaseTrainer):
 
         # Create node masks based on importance scores
         high_conf_mask = importance_scores >= self.high_conf_threshold
-        low_conf_mask = importance_scores < self.low_conf_threshold
+        low_conf_mask = importance_scores < self.high_conf_threshold
 
         # Transfer masks to the device
         if torch.cuda.is_available():
