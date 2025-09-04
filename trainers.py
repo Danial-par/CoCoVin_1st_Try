@@ -409,6 +409,25 @@ class ViolinTrainer(BaseTrainer):
         return
 
 
+class ProjectionHead(nn.Module):
+    def __init__(self, in_dim, hidden_dim=None, out_dim=None, dropout=0.1):
+        super().__init__()
+        if hidden_dim is None:
+            hidden_dim = in_dim // 2
+        if out_dim is None:
+            out_dim = in_dim
+
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, out_dim)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
 class CoCoVinTrainer(BaseTrainer):
     def __init__(self, g, model, info_dict, *args, **kwargs):
         super().__init__(g, model, info_dict, *args, **kwargs)
@@ -435,12 +454,6 @@ class CoCoVinTrainer(BaseTrainer):
                                           lr=info_dict['lr_cocos'],
                                           weight_decay=info_dict['weight_decay'])
 
-        # optimizer for the unified training
-        self.unified_opt = torch.optim.Adam([
-            {'params': self.model.parameters()},
-            {'params': self.Dis.parameters()}
-        ], lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
-
         # Add phase tracking for sequential training
         self.phase1_epochs = self.info_dict['n_epochs'] // 2  # First 1/2 for CoCoS only
 
@@ -455,13 +468,37 @@ class CoCoVinTrainer(BaseTrainer):
         self.phase1_probs = None  # To store probability distributions after CoCoS phase
         self.importance_scores = None  # To store node importance scores
 
-        # For tracking average probabilities using EMA
+        # Add these lines
         self.avg_probs = None  # For EMA-based tracking of probabilities
         self.ema_alpha = 0.1  # EMA smoothing factor (adjust as needed)
 
-        # Confidence thresholds for stability scoring
-        self.high_conf_threshold = info_dict.get('high_conf_threshold', 0.85)  # Default: 0.85
-        self.low_conf_threshold = info_dict.get('low_conf_threshold', 0.5)    # Default: 0.5
+        # Get embedding dimension
+        self.emb_dim = self.info_dict.get('hidden_dim', 64)  # Default to 64
+
+        # Initialize projection heads
+        self.cls_head = kwargs.get('cls_head', ProjectionHead(self.emb_dim))
+        self.violin_head = kwargs.get('violin_head', ProjectionHead(self.emb_dim))
+        self.cocos_head = kwargs.get('cocos_head', ProjectionHead(self.emb_dim))
+
+        # Move heads to device
+        self.cls_head = self.cls_head.to(self.info_dict['device'])
+        self.violin_head = self.violin_head.to(self.info_dict['device'])
+        self.cocos_head = self.cocos_head.to(self.info_dict['device'])
+
+        # Cosine similarity for cross-augmentation loss
+        self.cosine_sim = nn.CosineSimilarity(dim=1)
+
+        # Update optimizer to include all parameters
+        self.unified_opt = torch.optim.Adam([
+            {'params': self.model.parameters()},
+            {'params': self.Dis.parameters()},
+            {'params': self.cls_head.parameters()},
+            {'params': self.violin_head.parameters()},
+            {'params': self.cocos_head.parameters()}
+        ], lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
+
+        # Cross-augmentation loss weight
+        self.cross_aug_weight = info_dict.get('delta_cross', 0.1)  # Default to 0.1
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -719,9 +756,6 @@ class CoCoVinTrainer(BaseTrainer):
         cls_labels = self.tr_y.to(self.info_dict['device'])
         con_nids = torch.cat((self.val_nid, self.tt_nid))
 
-        # Add this line to move con_nids to the same device
-        con_nids = con_nids.to(self.info_dict['device'])
-
         # CoCoS specific variables
         ctr_labels_pos = torch.ones_like(con_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
         ctr_labels_neg = torch.zeros_like(con_nids, device=self.info_dict['device']).unsqueeze(dim=-1).float()
@@ -730,151 +764,113 @@ class CoCoVinTrainer(BaseTrainer):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # Compute node importance scores
-        importance_scores = self.compute_importance_scores()
-
-        # Create node masks based on importance scores
-        high_conf_mask = importance_scores >= self.high_conf_threshold
-        low_conf_mask = importance_scores < self.high_conf_threshold
-
-        # Transfer masks to the device
-        if torch.cuda.is_available():
-            high_conf_mask = high_conf_mask.to(self.info_dict['device'])
-            low_conf_mask = low_conf_mask.to(self.info_dict['device'])
-
         self.model.train()
-        self.Dis.train()
+        self.Dis.train()  # Make sure discriminator is in train mode
+        self.cls_head.train()
+        self.violin_head.train()
+        self.cocos_head.train()
 
         with torch.set_grad_enabled(True):
             x_data = self.g.x.to(self.info_dict['device'])
+
+            # Get original graph edges and augmented graph edges (Violin)
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
             aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
-            virt_edge_index = self.virt_edge_index.to(
-                self.info_dict['device']) if self.virt_edge_index is not None else None
+            virt_edge_index = self.virt_edge_index.to(self.info_dict['device']) if self.virt_edge_index is not None else None
 
-            # === Process original graph ===
-            ori_logits = self.model(x_data, ori_edge_index)
+            # === Process original graph for base embeddings ===
+            ori_embeddings = self.model(x_data, ori_edge_index, get_embeddings=True)
+            ori_logits = self.cls_head(ori_embeddings)
             ori_conf = torch.softmax(ori_logits, dim=1)
 
             # === Process Violin-augmented graph (with virtual edges) ===
-            aug_logits = self.model(x_data, aug_edge_index) if virt_edge_index is not None else ori_logits
-            aug_conf = torch.softmax(aug_logits, dim=1) if virt_edge_index is not None else ori_conf
+            if virt_edge_index is not None:
+                aug_embeddings = self.model(x_data, aug_edge_index, get_embeddings=True)
+                # Apply Violin projection head
+                aug_violin_proj = self.violin_head(aug_embeddings)
+                aug_logits = self.cls_head(aug_embeddings)
+                aug_conf = torch.softmax(aug_logits, dim=1)
+            else:
+                aug_embeddings = ori_embeddings
+                aug_violin_proj = self.violin_head(aug_embeddings)
+                aug_logits = ori_logits
+                aug_conf = ori_conf
 
             # === Process CoCoS-augmented graph (feature shuffling) ===
+            # Feature-shuffled view for CoCoS
             shuf_feat = self.shuffle_feat(x_data)
-            shuf_logits = self.model(shuf_feat, ori_edge_index)
+            shuf_embeddings = self.model(shuf_feat, ori_edge_index, get_embeddings=True)
+            # Apply CoCoS projection head
+            shuf_cocos_proj = self.cocos_head(shuf_embeddings)
+            shuf_logits = self.cls_head(shuf_embeddings)
 
-            # Generate CoCoS positive/negative samples
+            # === Generate CoCoS positive/negative samples ===
             pos_nids = self.shuffle_nids()
-            tp_ori_logits = ori_logits[pos_nids]
-            tp_shuf_logits = shuf_logits[pos_nids]
+            # Project embeddings for discriminator
+            tp_ori_cocos_proj = self.cocos_head(ori_embeddings[pos_nids])
+            tp_shuf_cocos_proj = self.cocos_head(shuf_embeddings[pos_nids])
             neg_nids = self.gen_neg_nids()
-            neg_ori_logits = ori_logits[neg_nids].detach()
+            neg_ori_cocos_proj = self.cocos_head(ori_embeddings[neg_nids]).detach()
 
-            # === Classification Loss (remains the same) ===
-            cls_mode = self.info_dict.get('cls_mode', 'OV')
+            # === Classification Loss (using cls_head outputs) ===
+            # Default to Original + Violin + CoCoS views
+            epoch_cls_loss = (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
+                              self.crs_entropy_fn(aug_logits[cls_nids], cls_labels) +
+                              self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)) / 3.0
 
-            # Initialize loss and logits variables
-            epoch_cls_loss = 0.0
-            total_logits = None
-            num_components = 0
-            cls_mode_lower = cls_mode.lower()
+            # Get predictions from the primary view (original)
+            _, preds = torch.max(ori_logits[cls_nids], dim=1)
 
-            # Standard classification loss computation
-            if 'o' in cls_mode_lower:
-                epoch_cls_loss += self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
-                total_logits = ori_logits if total_logits is None else total_logits + ori_logits
-                num_components += 1
+            # === Violin Losses (using violin_head outputs) ===
+            # Only compute if virtual edges exist
+            if virt_edge_index is not None:
+                # Consistency loss - between original and augmented violin projections
+                ori_violin_proj = self.violin_head(ori_embeddings)
+                epoch_con_loss = torch.abs(ori_violin_proj[con_nids] - aug_violin_proj[con_nids]).sum(dim=1).mean()
 
-            if 'v' in cls_mode_lower:
-                epoch_cls_loss += self.crs_entropy_fn(aug_logits[cls_nids], cls_labels)
-                total_logits = aug_logits if total_logits is None else total_logits + aug_logits
-                num_components += 1
-
-            if 'c' in cls_mode_lower:
-                epoch_cls_loss += self.crs_entropy_fn(shuf_logits[cls_nids], cls_labels)
-                total_logits = shuf_logits if total_logits is None else total_logits + shuf_logits
-                num_components += 1
-
-            if num_components == 0:
-                # Default fallback
-                epoch_cls_loss = 0.5 * (self.crs_entropy_fn(ori_logits[cls_nids], cls_labels) +
-                                        self.crs_entropy_fn(aug_logits[cls_nids], cls_labels))
-                total_logits = ori_logits + aug_logits
-                num_components = 2
+                # Virtual link loss - use violin projections
+                num_unq_vls = virt_edge_index.shape[1] // 2
+                epoch_vl_loss = torch.abs(aug_violin_proj[virt_edge_index[0, :num_unq_vls]] -
+                                          aug_violin_proj[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
             else:
-                epoch_cls_loss /= num_components
+                epoch_con_loss = torch.tensor(0.0, device=self.info_dict['device'])
+                epoch_vl_loss = torch.tensor(0.0, device=self.info_dict['device'])
 
-            # Get predictions for metrics
-            _, preds = torch.max(total_logits[cls_nids], dim=1)
+            # === CoCoS Contrastive Loss (using cocos_head outputs) ===
+            # Positive samples
+            ori_cocos_proj = self.cocos_head(ori_embeddings)
+            pos_score_f = self.Dis(torch.cat((shuf_cocos_proj, ori_cocos_proj), dim=-1))
+            pos_loss_f = self.bce_fn(pos_score_f[con_nids], ctr_labels_pos)
+            pos_score_s = self.Dis(torch.cat((tp_shuf_cocos_proj, shuf_cocos_proj), dim=-1))
+            pos_loss_s = self.bce_fn(pos_score_s[con_nids], ctr_labels_pos)
+            epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
 
-            # === GATED AUGMENTATION LOSSES ===
+            # Negative samples
+            neg_score = self.Dis(torch.cat((ori_cocos_proj, neg_ori_cocos_proj), dim=-1))
+            epoch_ctr_loss_neg = self.bce_fn(neg_score[con_nids], ctr_labels_neg)
+            epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
 
-            # 1. Violin Losses - Only for high confidence nodes
-            violin_loss = torch.tensor(0.0, device=self.info_dict['device'])
-            if virt_edge_index is not None and high_conf_mask.any():
-                # Filter validation/test nodes by high confidence
-                high_conf_con_nids = con_nids[high_conf_mask[con_nids]]
+            # === Cross-Augmentation Consistency Loss ===
+            # Ensure consistency between violin and cocos representations
+            cross_aug_loss = 1.0 - self.cosine_sim(aug_violin_proj, shuf_cocos_proj).mean()
 
-                if len(high_conf_con_nids) > 0:
-                    # Consistency loss - only for high confidence nodes
-                    epoch_con_loss = torch.abs(ori_conf[high_conf_con_nids] -
-                                               aug_conf[high_conf_con_nids]).sum(dim=1).mean()
+            # === Total Loss ===
+            # Classification loss
+            total_loss = epoch_cls_loss
 
-                    # Virtual link loss - filter by high confidence
-                    num_unq_vls = virt_edge_index.shape[1] // 2
-                    src_nodes = virt_edge_index[0, :num_unq_vls]
-                    dst_nodes = virt_edge_index[1, :num_unq_vls]
+            # Violin losses
+            if virt_edge_index is not None:
+                total_loss += self.info_dict['alpha'] * epoch_con_loss + self.info_dict['gamma'] * epoch_vl_loss
 
-                    # Only consider virtual edges where both nodes are high confidence
-                    edge_mask = high_conf_mask[src_nodes] & high_conf_mask[dst_nodes]
+            # CoCoS loss
+            total_loss += self.info_dict['beta'] * epoch_ctr_loss
 
-                    if edge_mask.any():
-                        filtered_src = src_nodes[edge_mask]
-                        filtered_dst = dst_nodes[edge_mask]
-                        epoch_vl_loss = torch.abs(aug_conf[filtered_src] -
-                                                  aug_conf[filtered_dst]).sum(dim=1).mean()
-
-                        violin_loss = self.info_dict['alpha'] * epoch_con_loss + \
-                                      self.info_dict['gamma'] * epoch_vl_loss
-                    else:
-                        violin_loss = self.info_dict['alpha'] * epoch_con_loss
-
-            # 2. CoCoS Contrastive Loss - Only for low confidence nodes
-            cocos_loss = torch.tensor(0.0, device=self.info_dict['device'])
-            if low_conf_mask.any():
-                # Filter validation/test nodes by low confidence
-                low_conf_con_nids = con_nids[low_conf_mask[con_nids]]
-
-                if len(low_conf_con_nids) > 0:
-                    # Create appropriate labels
-                    low_conf_labels_pos = torch.ones_like(low_conf_con_nids).unsqueeze(dim=-1).float().to(
-                        self.info_dict['device'])
-                    low_conf_labels_neg = torch.zeros_like(low_conf_con_nids).unsqueeze(dim=-1).float().to(
-                        self.info_dict['device'])
-
-                    # Positive samples
-                    pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
-                    pos_loss_f = self.bce_fn(pos_score_f[low_conf_con_nids], low_conf_labels_pos)
-
-                    pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
-                    pos_loss_s = self.bce_fn(pos_score_s[low_conf_con_nids], low_conf_labels_pos)
-
-                    epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
-
-                    # Negative samples
-                    neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
-                    epoch_ctr_loss_neg = self.bce_fn(neg_score[low_conf_con_nids], low_conf_labels_neg)
-
-                    # CoCoS contrastive loss
-                    cocos_loss = self.info_dict['beta'] * (epoch_ctr_loss_pos + epoch_ctr_loss_neg)
-
-            # === Total Loss: Gated Mixture ===
-            epoch_loss = epoch_cls_loss + violin_loss + cocos_loss
+            # Cross-augmentation loss
+            total_loss += self.cross_aug_weight * cross_aug_loss
 
             # Optimization step
             self.unified_opt.zero_grad()
-            epoch_loss.backward()
+            total_loss.backward()
             self.unified_opt.step()
 
             # Calculate metrics
@@ -886,7 +882,7 @@ class CoCoVinTrainer(BaseTrainer):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        return epoch_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
+        return total_loss.cpu().item(), epoch_acc, epoch_micro_f1, epoch_macro_f1
 
     def compute_importance_scores(self):
         """
@@ -996,13 +992,16 @@ class CoCoVinTrainer(BaseTrainer):
     def eval_epoch(self, epoch_i):
         tic = time.time()
         self.model.eval()
+        self.cls_head.eval()
         val_labels = self.val_y.to(self.info_dict['device'])
         tt_labels = self.tt_y.to(self.info_dict['device'])
         with torch.set_grad_enabled(False):
             x_data = self.g.x.to(self.info_dict['device'])
             ori_edge_index = self.ori_edge_index.to(self.info_dict['device'])
-            ori_logits = self.model(x_data, ori_edge_index)
+            ori_embeddings = self.model(x_data, ori_edge_index, get_embeddings=True)
+            ori_logits = self.cls_head(ori_embeddings)
             ori_conf = torch.softmax(ori_logits, dim=1)
+
             val_epoch_loss = self.crs_entropy_fn(ori_logits[self.val_nid], val_labels)
             tt_epoch_loss = self.crs_entropy_fn(ori_logits[self.tt_nid], tt_labels)
             _, val_preds = torch.max(ori_logits[self.val_nid], dim=1)
@@ -1026,16 +1025,22 @@ class CoCoVinTrainer(BaseTrainer):
                (tt_epoch_loss.cpu().item(), tt_epoch_acc, tt_epoch_micro_f1, tt_epoch_macro_f1)
 
     def get_pred_labels(self):
-
         # load the pretrained model and use it to estimate the labels
         cur_model_state_dict = deepcopy(self.model.state_dict())
-        self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
+        cur_cls_head_state_dict = deepcopy(self.cls_head.state_dict())
+
+        self.model.load_state_dict(
+            torch.load(self.pretr_model_dir + "_model.pt", map_location=self.info_dict['device']))
+        self.cls_head.load_state_dict(
+            torch.load(self.pretr_model_dir + "_cls_head.pt", map_location=self.info_dict['device']))
 
         self.model.eval()
+        self.cls_head.eval()
         with torch.set_grad_enabled(False):
             x_data = self.g.x.to(self.info_dict['device'])
             edge_index = self.ori_edge_index.to(self.info_dict['device'])
-            logits = self.model(x_data, edge_index)
+            embeddings = self.model(x_data, edge_index, get_embeddings=True)
+            logits = self.cls_head(embeddings)
 
             _, preds = torch.max(logits, dim=1)
             conf = torch.softmax(logits, dim=1).max(dim=1)[0]
@@ -1168,3 +1173,21 @@ class CoCoVinTrainer(BaseTrainer):
             shuf_nid[i_pos] = i_neg
 
         return shuf_nid
+
+    def save_model(self, model, info_dict):
+        save_model_dir = os.path.join('exp', info_dict['model'], info_dict['dataset'],
+                                    '{model}_{db}_{seed}_{state}'.format(
+                                        model=info_dict['backbone'],
+                                        db=info_dict['dataset'],
+                                        seed=info_dict['seed'],
+                                        state='val'))
+
+        if not os.path.exists(os.path.dirname(save_model_dir)):
+            os.makedirs(os.path.dirname(save_model_dir))
+
+        torch.save(model.state_dict(), save_model_dir + "_model.pt")
+        torch.save(self.cls_head.state_dict(), save_model_dir + "_cls_head.pt")
+        torch.save(self.violin_head.state_dict(), save_model_dir + "_violin_head.pt")
+        torch.save(self.cocos_head.state_dict(), save_model_dir + "_cocos_head.pt")
+
+        return save_model_dir
