@@ -146,15 +146,7 @@ def main(args):
         backbone_list = ['GCN', 'GAT', 'SAGE', 'JKNet', 'GCN2', 'APPNPNet', 'GIN', 'SGC']
 
         # Initialize model
-        if args.model in backbone_list:
-            # For pure backbone models, use OGB version if needed
-            model = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, args.model)(info_dict)
-        elif args.model.startswith('CoCoVin') or args.model.startswith('Violin'):
-            # For composite models, always use regular models module
-            model = getattr(models, args.model)(info_dict)
-        else:
-            # Default case
-            model = getattr(models, args.model)(info_dict)
+        model = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, args.model)(info_dict)
 
         # Initialize trainer
         if args.model in backbone_list:
