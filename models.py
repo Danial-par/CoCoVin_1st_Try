@@ -15,19 +15,17 @@ class GCN(nn.Module):
         self.dropout = nn.Dropout(p=info_dict['dropout'])
         for i in range(info_dict['n_layers']):
             in_dim = info_dict['in_dim'] if i == 0 else info_dict['hid_dim']
-            out_dim = info_dict['out_dim'] if i == info_dict['n_layers'] - 1 else info_dict['hid_dim']
-            bn = False if i == (info_dict['n_layers'] - 1) else info_dict['bn']
+            out_dim = info_dict['hid_dim']
+            bn = info_dict['bn']
             self.enc.append(GCNConv(in_dim, out_dim))
             self.bns.append(nn.BatchNorm1d(out_dim) if bn else nn.Identity())
 
     def forward(self, x, edge_index):
         for i in range(self.info_dict['n_layers']):
             x = self.dropout(x)
-            h = self.enc[i](x, edge_index)
-            if i < self.info_dict['n_layers'] - 1:
-                h = self.bns[i](h)
-                h = self.act(h)
-            x = h
+            x = self.enc[i](x, edge_index)
+            x = self.bns[i](x)
+            x = self.act(x)
         return x
 
     def reset_parameters(self):
@@ -42,6 +40,15 @@ class ViolinGCN(GCN):
 class CoCoVinGCN(GCN):
     def __init__(self, info_dict):
         super().__init__(info_dict)
+
+class ProjectionHead(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+
+        self.net = GCNConv(in_dim, out_dim)
+
+    def forward(self, x, edge_index):
+        return self.net(x, edge_index)
 
 # --- GAT ---
 class GAT(nn.Module):
