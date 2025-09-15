@@ -147,21 +147,18 @@ def main(args):
 
         # Initialize model
         model = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, args.model)(info_dict)
-        cls_head = getattr(models, "ProjectionHead")(info_dict['hid_dim'], info_dict['out_dim']).to(info_dict['device'])
-        violin_head = getattr(models, "ProjectionHead")(info_dict['hid_dim'], info_dict['out_dim']).to(info_dict['device'])
-        cocos_head = getattr(models, "ProjectionHead")(info_dict['hid_dim'], info_dict['out_dim']).to(info_dict['device'])
 
         # Initialize trainer
         if args.model in backbone_list:
-            trainer = getattr(trainers, 'BaseTrainer')(g, model, info_dict, cls_head=cls_head)
+            trainer = getattr(trainers, 'BaseTrainer')(g, model, info_dict)
         elif args.model.startswith('CoCoVin'):
             info_dict.update({'backbone': args.model[7:]})
             Dis = getattr(models_ogb if args.dataset == 'ogbn-arxiv' else models, 'DisMLP')(info_dict)
             Dis.to(info_dict['device'])
-            trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis, cls_head=cls_head, violin_head=violin_head, cocos_head=cocos_head)
+            trainer = getattr(trainers, 'CoCoVinTrainer')(g, model, info_dict, Dis=Dis)
         elif args.model.startswith('Violin'):
             info_dict.update({'backbone': args.model[6:]})
-            trainer = getattr(trainers, 'ViolinTrainer')(g, model, info_dict, cls_head=cls_head, violin_head=violin_head)
+            trainer = getattr(trainers, 'ViolinTrainer')(g, model, info_dict)
         else:
             raise ValueError('Unknown model: {}'.format(args.model))
 
@@ -232,6 +229,8 @@ if __name__ == '__main__':
     # extra added arguements
     parser.add_argument("--seed", type=int, default=0,
                         help="the random seed to reproduce the result")
+
+    parser.add_argument("--consistency_weight", type=float, default=0.1,)
 
     args = parser.parse_args()
 

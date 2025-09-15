@@ -14,62 +14,67 @@ class GCN(nn.Module):
     def __init__(self, info_dict, use_linear=False):
         super().__init__()
         self.info_dict = info_dict
+        self.n_layers = info_dict['n_layers']
+        self.use_linear = use_linear
+
         self.enc = nn.ModuleList()
+        if use_linear:
+            self.linear = nn.ModuleList()
         self.bns = nn.ModuleList()
-        self.act = nn.ReLU()
-        self.dropout = nn.Dropout(p=info_dict['dropout'])
 
         for i in range(info_dict['n_layers']):
-            in_dim = info_dict['in_dim'] if i == 0 else info_dict['hid_dim']
-            out_dim = info_dict['hid_dim']
-            bn = info_dict['bn']
-            self.enc.append(GCNConv(in_dim, out_dim))
+            in_dim = info_dict['hid_dim'] if i > 0 else info_dict['in_dim']
+            out_dim = info_dict['hid_dim'] if i < info_dict['n_layers'] - 1 else info_dict['out_dim']
+            bias = True  # Changed: Enable bias for all layers
+            bn = False if i == (info_dict['n_layers'] - 1) else info_dict['bn']
+
+            self.enc.append(GCNConv(in_dim, out_dim, bias=bias))
+            if use_linear:
+                self.linear.append(nn.Linear(in_dim, out_dim, bias=False))
             self.bns.append(nn.BatchNorm1d(out_dim) if bn else nn.Identity())
 
-    def forward(self, x, edge_index, virt_edge_index=None):
-        for i in range(self.info_dict['n_layers']):
-            x = self.dropout(x)
-            x = self.enc[i](x, edge_index)
+        self.input_drop = nn.Dropout(min(0.1, info_dict['dropout']))
+        self.dropout = nn.Dropout(info_dict['dropout'])
+        self.activation = F.relu
 
+    def forward(self, x, edge_index, virt_edge_index=None):
+        x = self.input_drop(x)
+
+        for i in range(self.n_layers):
+            h = self.enc[i](x, edge_index)
             if virt_edge_index is not None:
                 vh = self.enc[i](x, virt_edge_index)
                 if self.info_dict['virt_agg'] == 'max':
-                    x = torch.maximum(x, vh)
+                    h = torch.maximum(h, vh)
                 elif self.info_dict['virt_agg'] == 'sum':
-                    x = vh + x
+                    h = vh + h
                 else:
                     raise ValueError('Unknown virtual link features aggregator!')
 
-            x = self.bns[i](x)
-            x = self.act(x)
+            if self.use_linear:
+                linear = self.linear[i](x)
+                h = h + linear
+
+            if i < self.n_layers - 1:
+                h = self.bns[i](h)
+                h = self.activation(h)
+                h = self.dropout(h)
+
+            x = h
+
         return x
 
     def reset_parameters(self):
-        for i in range(self.info_dict['n_layers']):
+        for i in range(self.n_layers):
             self.enc[i].reset_parameters()
             self.bns[i].reset_parameters()
+            if self.use_linear:
+                self.linear[i].reset_parameters()
 
 
 class ViolinGCN(GCN):
     def __init__(self, info_dict):
         super().__init__(info_dict)
-
-
-class CoCoVinGCN(GCN):
-    def __init__(self, info_dict):
-        super().__init__(info_dict)
-
-
-class ProjectionHead(nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super().__init__()
-        self.net = GCNConv(in_dim, out_dim)
-
-    def forward(self, x, edge_index):
-        return self.net(x, edge_index)
-
-    def reset_parameters(self):
-        self.net.reset_parameters()
 
 
 class GAT(nn.Module):
@@ -90,6 +95,7 @@ class GAT(nn.Module):
             self.enc.append(GATConv(in_dim, out_dim, heads=num_heads, dropout=info_dict['attn_drop']))
             self.norms.append(nn.BatchNorm1d(num_heads * out_dim) if bn else nn.Identity())
 
+            
         self.input_drop = nn.Dropout(info_dict['input_drop'])
         self.dropout = nn.Dropout(info_dict['dropout'])
         self.activation = F.relu
@@ -101,6 +107,7 @@ class GAT(nn.Module):
             if not self.use_attn_dst:
                 x = (x, None)
             h = self.enc[i](x, edge_index)
+            
 
             if i < self.n_layers - 1:
                 h = self.norms[i](h)
@@ -154,7 +161,7 @@ class SAGE(nn.Module):
 
         for i in range(self.n_layers):
             h = self.enc[i](x, edge_index)
-
+            
             if self.use_linear:
                 linear = self.linear[i](x)
                 h = h + linear
@@ -183,6 +190,10 @@ class ViolinSAGE(SAGE):
 
 class JKNet(nn.Module):
     def __init__(self, info_dict, use_linear=False):
+        super().__init__()
+        self.info_dict = info_dict
+        self.n_layers = info_dict['n_layers']
+        self.use_linear = use_linear
 
         self.enc = nn.ModuleList()
         if use_linear:
@@ -212,7 +223,7 @@ class JKNet(nn.Module):
 
         for i in range(self.n_layers):
             h = self.enc[i](x, edge_index)
-
+            
             if self.use_linear:
                 linear = self.linear[i](x)
                 h = h + linear
@@ -409,7 +420,7 @@ class GIN(nn.Module):
             out_dim = info_dict['hid_dim'] if i < info_dict['n_layers'] - 1 else info_dict['out_dim']
             bn = False if i == (info_dict['n_layers'] - 1) else info_dict['bn']
 
-            self.enc.append(GINConv(nn.Linear(in_dim, out_dim), train_eps=True, ))
+            self.enc.append(GINConv(nn.Linear(in_dim, out_dim), train_eps=True,))
             if use_linear:
                 self.linear.append(nn.Linear(in_dim, out_dim, bias=False))
             self.norms.append(nn.BatchNorm1d(out_dim) if bn else nn.Identity())
