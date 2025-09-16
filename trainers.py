@@ -446,7 +446,8 @@ class CoCoVinTrainer(BaseTrainer):
         self.conf_thrs = 0
         self.virt_edge_index = None
         self.best_pretr_val_acc = None
-        self.pretr_model_dir = os.path.join('exp', self.info_dict['backbone'] + '_ori', self.info_dict['dataset'], '{model}_{db}_{seed}_{state}.pt'.format(model=self.info_dict['backbone'], db=self.info_dict['dataset'], seed=self.info_dict['seed'], state='val',))
+        self.pretr_model_dir = os.path.join('exp', self.info_dict['backbone'] + '_ori', self.info_dict['dataset'], '{model}_{db}_{seed}_{state}.pt'.format(model=self.info_dict['backbone'],
+                                           db=self.info_dict['dataset'], seed=self.info_dict['seed'], state='val',))
         self.load_pretr_model()
         self.pred_label_flag = True
 
@@ -484,15 +485,79 @@ class CoCoVinTrainer(BaseTrainer):
         input_dim = self.g.x.size(1)  # Node feature dimension
         self.gating_network = GatingMLP(input_dim).to(self.info_dict['device'])
 
-        # Add gating parameters to the optimizer
-        self.unified_opt = torch.optim.Adam([
-            {'params': self.model.parameters()},
-            {'params': self.Dis.parameters()},
-            {'params': self.gating_network.parameters()}
-        ], lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
-
         # Add weight for consistency loss (between gated and original embeddings)
         self.info_dict['consistency_weight'] = info_dict.get('consistency_weight', 0.1)
+
+        self.train_phase = 'gcn'  # Start with training GCN 'gcn' or 'gate'
+        self.steps_per_phase = info_dict.get('steps_per_phase', 5)  # Default 5 steps before switching
+        self.current_phase_steps = 0
+
+        # Create separate optimizers for each component
+        self.gcn_optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=info_dict['lr'],
+            weight_decay=info_dict['weight_decay']
+        )
+
+        self.dis_optimizer = torch.optim.Adam(
+            self.Dis.parameters(),
+            lr=info_dict['lr_cocos'],
+            weight_decay=info_dict['weight_decay']
+        )
+
+        self.gate_optimizer = torch.optim.Adam(
+            self.gating_network.parameters(),
+            lr=info_dict.get('lr_gate'),
+            weight_decay=info_dict['weight_decay']
+        )
+
+
+    def freeze_model(self):
+        """Freeze GCN model parameters"""
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+    def unfreeze_model(self):
+        """Unfreeze GCN model parameters"""
+        for param in self.model.parameters():
+            param.requires_grad = True
+
+    def freeze_gating(self):
+        """Freeze gating network parameters"""
+        for param in self.gating_network.parameters():
+            param.requires_grad = False
+
+    def unfreeze_gating(self):
+        """Unfreeze gating network parameters"""
+        for param in self.gating_network.parameters():
+            param.requires_grad = True
+
+    def freeze_dis(self):
+        """Freeze discriminator network parameters"""
+        for param in self.Dis.parameters():
+            param.requires_grad = False
+
+    def unfreeze_dis(self):
+        """Unfreeze discriminator network parameters"""
+        for param in self.Dis.parameters():
+            param.requires_grad = True
+
+    def switch_phase(self):
+        """Switch between training phases"""
+        if self.train_phase == 'gcn':
+            self.train_phase = 'gate'
+            # Freeze GCN, unfreeze gating
+            self.freeze_model()
+            self.freeze_dis()
+            self.unfreeze_gating()
+        else:
+            self.train_phase = 'gcn'
+            # Freeze gating, unfreeze GCN
+            self.unfreeze_model()
+            self.unfreeze_dis()
+            self.freeze_gating()
+
+        self.current_phase_steps = 0
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -564,6 +629,12 @@ class CoCoVinTrainer(BaseTrainer):
                 self.avg_probs = self.ema_alpha * current_probs + (1 - self.ema_alpha) * self.avg_probs
 
     def train(self):
+        # Start in GCN phase by default
+        self.train_phase = 'gcn'
+        self.unfreeze_model()
+        self.unfreeze_dis()
+        self.freeze_gating()
+
         for i in range(self.info_dict['n_epochs']):
             # Get predictions for both methods on regular intervals
             if i % self.info_dict['eta'] == 0:
@@ -574,12 +645,20 @@ class CoCoVinTrainer(BaseTrainer):
                 # Add virtual links for Violin
                 self.add_VOs()
 
-            # Train using unified approach (both methods together)
+            # Train the current phase (GCN or gating)
             tr_loss_epoch, tr_acc, tr_microf1, tr_macrof1 = self.train_epoch_unified(i)
-            (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
-            (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
 
-            # Rest of the code remains the same
+            # Evaluate performance
+            (val_loss_epoch, val_acc_epoch, val_microf1_epoch, val_macrof1_epoch), \
+                (tt_loss_epoch, tt_acc_epoch, tt_microf1_epoch, tt_macrof1_epoch) = self.eval_epoch(i)
+
+            # Check if it's time to switch phases
+            self.current_phase_steps += 1
+            if self.current_phase_steps >= self.steps_per_phase:
+                self.switch_phase()
+                print(f"Switching to {self.train_phase} phase at epoch {i}")
+
+            # Rest of the tracking code remains the same
             self.train_losses.append(tr_loss_epoch)
             self.train_accs.append(tr_acc)
             self.val_losses.append(val_loss_epoch)
@@ -599,9 +678,9 @@ class CoCoVinTrainer(BaseTrainer):
 
                 print(f"epoch {i:03d} | new best validation accuracy {self.best_val_acc:.4f} - test accuracy {self.best_tt_acc:.4f}")
 
-            if i % 50 == 0:
+            if i % 5 == 0:
                 print(
-                    f"Epoch {i:03d} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
+                    f"Epoch {i:03d} | Phase: {self.train_phase} | Loss: {tr_loss_epoch:.4f} | Train Acc: {tr_acc:.4f} | Val Acc: {val_acc_epoch:.4f} | Test Acc: {tt_acc_epoch:.4f}")
 
         # At the end of training, save metrics to Excel
         self.save_metrics_to_excel()
@@ -758,9 +837,10 @@ class CoCoVinTrainer(BaseTrainer):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        self.model.train()
-        self.Dis.train()
-        self.gating_network.train()
+        # Set model states based on current phase
+        self.model.train() if self.train_phase == 'gcn' else self.model.eval()
+        self.Dis.train() if self.train_phase == 'gcn' else self.Dis.eval()
+        self.gating_network.train() if self.train_phase == 'gate' else self.gating_network.eval()
 
         with torch.set_grad_enabled(True):
             x_data = self.g.x.to(self.info_dict['device'])
@@ -783,20 +863,25 @@ class CoCoVinTrainer(BaseTrainer):
             shuf_logits = self.model(shuf_feat, ori_edge_index)
 
             # === Apply node-level gating ===
-            # Get gate values based on node features and confidence scores
-            gate_values = self.gating_network(x_data, ori_conf_scores)
-
-            # Combine Violin and CoCoS views based on gate values
-            # Expand gate_values to match the dimensions of logits
-            gate_expanded = gate_values.expand_as(aug_logits)
-            final_logits = gate_expanded * aug_logits + (1 - gate_expanded) * shuf_logits
+            # Use detached logits when training gating to avoid leaking gradients
+            if self.train_phase == 'gate':
+                aug_logits_detached = aug_logits.detach()
+                shuf_logits_detached = shuf_logits.detach()
+                gate_values = self.gating_network(x_data, ori_conf_scores)
+                gate_expanded = gate_values.unsqueeze(1).expand_as(aug_logits_detached)
+                final_logits = gate_expanded * aug_logits_detached + (1 - gate_expanded) * shuf_logits_detached
+            else:
+                # When training GCN, use gate values without gradients
+                with torch.no_grad():
+                    gate_values = self.gating_network(x_data, ori_conf_scores)
+                gate_expanded = gate_values.unsqueeze(1).expand_as(aug_logits)
+                final_logits = gate_expanded * aug_logits + (1 - gate_expanded) * shuf_logits
 
             # === Consistency loss ===
-            # L1 norm between final embeddings and original embeddings
             consistency_loss = torch.abs(final_logits - ori_logits).mean()
 
             # === Classification Loss ===
-            cls_mode = self.info_dict.get('cls_mode', 'both')  # Default to both
+            cls_mode = self.info_dict.get('cls_mode', 'both')
 
             if cls_mode.lower() == 'ori':
                 epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
@@ -810,12 +895,8 @@ class CoCoVinTrainer(BaseTrainer):
                 _, preds = torch.max((ori_logits + final_logits)[cls_nids] / 2, dim=1)
 
             # === Violin Losses ===
-            # Only compute if virtual edges exist
-            if virt_edge_index is not None:
-                # Consistency loss for Violin (between original and augmented)
+            if virt_edge_index is not None and self.train_phase == 'gcn':
                 violin_con_loss = torch.abs(ori_conf[con_nids] - torch.softmax(aug_logits, dim=1)[con_nids]).sum(dim=1).mean()
-
-                # Virtual link loss
                 aug_conf = torch.softmax(aug_logits, dim=1)
                 num_unq_vls = virt_edge_index.shape[1] // 2
                 violin_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] -
@@ -824,45 +905,57 @@ class CoCoVinTrainer(BaseTrainer):
                 violin_con_loss = torch.tensor(0.0, device=self.info_dict['device'])
                 violin_vl_loss = torch.tensor(0.0, device=self.info_dict['device'])
 
-            # === CoCoS Contrastive Loss (using original implementation) ===
-            # Generate positive/negative samples for CoCoS
-            pos_nids = self.shuffle_nids()
-            tp_ori_logits = ori_logits[pos_nids]
-            tp_shuf_logits = shuf_logits[pos_nids]
-            neg_nids = self.gen_neg_nids()
-            neg_ori_logits = ori_logits[neg_nids].detach()
+            # # === CoCoS Contrastive Loss ===
+            # if self.train_phase == 'gcn':
+            #     pos_nids = self.shuffle_nids()
+            #     tp_ori_logits = ori_logits[pos_nids]
+            #     tp_shuf_logits = shuf_logits[pos_nids]
+            #     neg_nids = self.gen_neg_nids()
+            #     neg_ori_logits = ori_logits[neg_nids].detach()
+            #
+            #     pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
+            #     pos_loss_f = self.bce_fn(pos_score_f[con_nids], ctr_labels_pos)
+            #     pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
+            #     pos_loss_s = self.bce_fn(pos_score_s[con_nids], ctr_labels_pos)
+            #     epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
+            #
+            #     neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
+            #     epoch_ctr_loss_neg = self.bce_fn(neg_score[con_nids], ctr_labels_neg)
+            #     epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
+            # else:
+            #     epoch_ctr_loss = torch.tensor(0.0, device=self.info_dict['device'])
 
-            # Positive samples
-            pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
-            pos_loss_f = self.bce_fn(pos_score_f[con_nids], ctr_labels_pos)
-            pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
-            pos_loss_s = self.bce_fn(pos_score_s[con_nids], ctr_labels_pos)
-            epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
+            # === Total Loss: Depends on training phase ===
+            if self.train_phase == 'gcn':
+                # When training GCN, focus on classification + regularizers
+                main_loss = epoch_cls_loss
+                # Add Violin components if available
+                if virt_edge_index is not None:
+                    main_loss = main_loss + self.info_dict['alpha'] * violin_con_loss + self.info_dict['gamma'] * violin_vl_loss
+                # # Add CoCoS contrastive loss
+                # main_loss = main_loss + self.info_dict['beta'] * epoch_ctr_loss
 
-            # Negative samples
-            neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
-            epoch_ctr_loss_neg = self.bce_fn(neg_score[con_nids], ctr_labels_neg)
-            epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
+                # Optimization step for GCN
+                self.gcn_optimizer.zero_grad()
+                self.dis_optimizer.zero_grad()
+                main_loss.backward()
+                self.gcn_optimizer.step()
+                self.dis_optimizer.step()
 
-            # === Total Loss: Combined ===
-            # Main components
-            main_loss = epoch_cls_loss
+            else:  # 'gate' phase
+                # When training gating network, focus on finding optimal mixing
+                gate_loss = epoch_cls_loss  # Classification loss is primary goal
+                # Add strong consistency regularizer for gating
+                # cons_weight = self.info_dict['consistency_weight'] * 3.0  # Increase consistency importance
+                gate_loss = gate_loss + cons_weight * consistency_loss
 
-            # Add consistency loss (between gated embeddings and original)
-            cons_weight = self.info_dict['consistency_weight']
-            main_loss = main_loss + cons_weight * consistency_loss
+                # Optimization step for gating
+                self.gate_optimizer.zero_grad()
+                gate_loss.backward()
+                self.gate_optimizer.step()
 
-            # Add Violin components if available
-            if virt_edge_index is not None:
-                main_loss = main_loss + self.info_dict['alpha'] * violin_con_loss + self.info_dict['gamma'] * violin_vl_loss
-
-            # Add CoCoS contrastive loss
-            main_loss = main_loss + self.info_dict['beta'] * epoch_ctr_loss
-
-            # Optimization step
-            self.unified_opt.zero_grad()
-            main_loss.backward()
-            self.unified_opt.step()
+                # For return value consistency
+                main_loss = gate_loss
 
             # Calculate metrics
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
@@ -1009,7 +1102,7 @@ class CoCoVinTrainer(BaseTrainer):
 
            # Apply gating
            gate_values = self.gating_network(x_data, ori_conf_scores)
-           gate_expanded = gate_values.expand_as(aug_logits)
+           gate_expanded = gate_values.unsqueeze(1).expand_as(aug_logits)
            final_logits = gate_expanded * aug_logits + (1 - gate_expanded) * shuf_logits
 
            # Evaluate using final gated logits
