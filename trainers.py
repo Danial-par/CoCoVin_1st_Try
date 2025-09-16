@@ -494,6 +494,21 @@ class CoCoVinTrainer(BaseTrainer):
         # Add weight for consistency loss (between gated and original embeddings)
         self.info_dict['consistency_weight'] = info_dict.get('consistency_weight', 0.1)
 
+        # Create EMA model (copy of the backbone)
+        self.ema_model = deepcopy(model)
+        self.ema_model.to(self.info_dict['device'])
+        # Set EMA model to eval mode and disable gradient computation
+        for param in self.ema_model.parameters():
+            param.requires_grad = False
+        # EMA decay rate (adjust as needed - higher value = slower updates)
+        self.ema_decay = 0.99
+
+    def update_ema_model(self):
+        """Update the EMA model parameters using the current model's parameters"""
+        with torch.no_grad():
+            for ema_param, model_param in zip(self.ema_model.parameters(), self.model.parameters()):
+                ema_param.data.mul_(self.ema_decay).add_(model_param.data, alpha=1 - self.ema_decay)
+
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
 
@@ -564,6 +579,11 @@ class CoCoVinTrainer(BaseTrainer):
                 self.avg_probs = self.ema_alpha * current_probs + (1 - self.ema_alpha) * self.avg_probs
 
     def train(self):
+        # Initialize EMA model with current model parameters
+        with torch.no_grad():
+            for ema_param, model_param in zip(self.ema_model.parameters(), self.model.parameters()):
+                ema_param.data.copy_(model_param.data)
+
         for i in range(self.info_dict['n_epochs']):
             # Get predictions for both methods on regular intervals
             if i % self.info_dict['eta'] == 0:
@@ -770,10 +790,16 @@ class CoCoVinTrainer(BaseTrainer):
             aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
             virt_edge_index = self.virt_edge_index.to(self.info_dict['device']) if self.virt_edge_index is not None else None
 
-            # === Process original graph ===
-            ori_logits = self.model(x_data, ori_edge_index)
-            ori_conf = torch.softmax(ori_logits, dim=1)
-            ori_conf_scores = torch.max(ori_conf, dim=1)[0]  # Max confidence scores for gating
+            # === Process original graph with EMA model (teacher) ===
+            with torch.no_grad():  # No gradient computation for teacher
+                self.ema_model.eval()  # Teacher is always in eval mode
+                ori_logits = self.ema_model(x_data, ori_edge_index)
+                ori_conf = torch.softmax(ori_logits, dim=1)
+                ori_conf_scores = torch.max(ori_conf, dim=1)[0]  # Max confidence scores for gating
+                # Detach to ensure no gradients flow through teacher
+                ori_logits = ori_logits.detach()
+                ori_conf = ori_conf.detach()
+                ori_conf_scores = ori_conf_scores.detach()
 
             # === Process Violin-augmented graph (with virtual edges) ===
             aug_logits = self.model(x_data, aug_edge_index) if virt_edge_index is not None else ori_logits
@@ -809,41 +835,6 @@ class CoCoVinTrainer(BaseTrainer):
                                        self.crs_entropy_fn(final_logits[cls_nids], cls_labels))
                 _, preds = torch.max((ori_logits + final_logits)[cls_nids] / 2, dim=1)
 
-            # === Violin Losses ===
-            # Only compute if virtual edges exist
-            if virt_edge_index is not None:
-                # Consistency loss for Violin (between original and augmented)
-                violin_con_loss = torch.abs(ori_conf[con_nids] - torch.softmax(aug_logits, dim=1)[con_nids]).sum(dim=1).mean()
-
-                # Virtual link loss
-                aug_conf = torch.softmax(aug_logits, dim=1)
-                num_unq_vls = virt_edge_index.shape[1] // 2
-                violin_vl_loss = torch.abs(aug_conf[virt_edge_index[0, :num_unq_vls]] -
-                                         aug_conf[virt_edge_index[1, :num_unq_vls]]).sum(dim=1).mean()
-            else:
-                violin_con_loss = torch.tensor(0.0, device=self.info_dict['device'])
-                violin_vl_loss = torch.tensor(0.0, device=self.info_dict['device'])
-
-            # === CoCoS Contrastive Loss (using original implementation) ===
-            # Generate positive/negative samples for CoCoS
-            pos_nids = self.shuffle_nids()
-            tp_ori_logits = ori_logits[pos_nids]
-            tp_shuf_logits = shuf_logits[pos_nids]
-            neg_nids = self.gen_neg_nids()
-            neg_ori_logits = ori_logits[neg_nids].detach()
-
-            # Positive samples
-            pos_score_f = self.Dis(torch.cat((shuf_logits, ori_logits), dim=-1))
-            pos_loss_f = self.bce_fn(pos_score_f[con_nids], ctr_labels_pos)
-            pos_score_s = self.Dis(torch.cat((tp_shuf_logits, shuf_logits), dim=-1))
-            pos_loss_s = self.bce_fn(pos_score_s[con_nids], ctr_labels_pos)
-            epoch_ctr_loss_pos = (pos_loss_f + pos_loss_s) / 2.0
-
-            # Negative samples
-            neg_score = self.Dis(torch.cat((ori_logits, neg_ori_logits), dim=-1))
-            epoch_ctr_loss_neg = self.bce_fn(neg_score[con_nids], ctr_labels_neg)
-            epoch_ctr_loss = epoch_ctr_loss_pos + epoch_ctr_loss_neg
-
             # === Total Loss: Combined ===
             # Main components
             main_loss = epoch_cls_loss
@@ -852,17 +843,13 @@ class CoCoVinTrainer(BaseTrainer):
             cons_weight = self.info_dict['consistency_weight']
             main_loss = main_loss + cons_weight * consistency_loss
 
-            # Add Violin components if available
-            if virt_edge_index is not None:
-                main_loss = main_loss + self.info_dict['alpha'] * violin_con_loss + self.info_dict['gamma'] * violin_vl_loss
-
-            # Add CoCoS contrastive loss
-            main_loss = main_loss + self.info_dict['beta'] * epoch_ctr_loss
-
             # Optimization step
             self.unified_opt.zero_grad()
             main_loss.backward()
             self.unified_opt.step()
+
+            # After self.unified_opt.step()
+            self.update_ema_model()  # Update EMA model parameters
 
             # Calculate metrics
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
