@@ -232,9 +232,6 @@ if __name__ == '__main__':
 
     parser.add_argument("--consistency_weight", type=float, default=0.1,)
 
-    parser.add_argument("--lr_gate", type=float, default=0.01,
-                        help="the learning rate for the gate MLP optimizer")
-
     args = parser.parse_args()
 
     main(args)
