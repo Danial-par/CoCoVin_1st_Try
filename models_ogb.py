@@ -76,10 +76,6 @@ class ViolinGCN(GCN):
     def __init__(self, info_dict):
         super().__init__(info_dict)
 
-class CoCoVinGCN(GCN):
-    def __init__(self, info_dict):
-        super().__init__(info_dict)
-
 
 class GAT(nn.Module):
     def __init__(self, info_dict, use_attn_dst=True):

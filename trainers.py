@@ -410,11 +410,11 @@ class ViolinTrainer(BaseTrainer):
 
 
 class GatingMLP(nn.Module):
-    def __init__(self, input_dim, cls_dim, hidden_dim=64):
+    def __init__(self, input_dim, hidden_dim=64):
         super(GatingMLP, self).__init__()
 
         # MLP layers to combine node features and confidence scores
-        self.fc1 = nn.Linear(input_dim + cls_dim, hidden_dim)  # +cls_dim for the confidence score
+        self.fc1 = nn.Linear(input_dim + 1, hidden_dim)  # +1 for the confidence score
         self.fc2 = nn.Linear(hidden_dim, 1)
 
         # Activation functions
@@ -422,6 +422,10 @@ class GatingMLP(nn.Module):
         self.sigmoid = nn.Sigmoid()  # Ensures output between 0-1 for gating
 
     def forward(self, node_features, confidence_scores):
+        # Reshape confidence scores if needed
+        if confidence_scores.dim() == 1:
+            confidence_scores = confidence_scores.unsqueeze(1)  # [N] -> [N, 1]
+
         # Concatenate node features with confidence scores
         x = torch.cat([node_features, confidence_scores], dim=1)
 
@@ -477,7 +481,8 @@ class CoCoVinTrainer(BaseTrainer):
         self.ema_alpha = 0.1  # EMA smoothing factor (adjust as needed)
 
         # Initialize the gating network
-        self.gating_network = GatingMLP(self.info_dict['in_dim'], self.info_dict['out_dim']).to(self.info_dict['device'])
+        input_dim = self.g.x.size(1)  # Node feature dimension
+        self.gating_network = GatingMLP(input_dim).to(self.info_dict['device'])
 
         # Add gating parameters to the optimizer
         self.unified_opt = torch.optim.Adam([
@@ -779,7 +784,7 @@ class CoCoVinTrainer(BaseTrainer):
 
             # === Apply node-level gating ===
             # Get gate values based on node features and confidence scores
-            gate_values = self.gating_network(x_data, ori_conf)
+            gate_values = self.gating_network(x_data, ori_conf_scores)
 
             # Combine Violin and CoCoS views based on gate values
             # Expand gate_values to match the dimensions of logits
@@ -994,16 +999,16 @@ class CoCoVinTrainer(BaseTrainer):
 
             # Get VO logits (if virtual edges exist)
             if self.virt_edge_index is not None:
-                aug_logits = self.model(x_data, aug_edge_index)
+               aug_logits = self.model(x_data, aug_edge_index)
             else:
-                aug_logits = ori_logits
+               aug_logits = ori_logits
 
             # Get CoCoS logits
             shuf_feat = self.shuffle_feat(x_data)
             shuf_logits = self.model(shuf_feat, ori_edge_index)
 
             # Apply gating
-            gate_values = self.gating_network(x_data, ori_conf)
+            gate_values = self.gating_network(x_data, ori_conf_scores)
             gate_expanded = gate_values.unsqueeze(1).expand_as(aug_logits)
             final_logits = gate_expanded * aug_logits + (1 - gate_expanded) * shuf_logits
 
