@@ -495,7 +495,10 @@ class CoCoVinTrainer(BaseTrainer):
         ], lr=info_dict['lr'], weight_decay=info_dict['weight_decay'])
 
         # Add weight for consistency loss (between gated and original embeddings)
-        self.info_dict['consistency_weight'] = info_dict.get('consistency_weight', 0.1)
+        self.info_dict['consistency_weight'] = info_dict.get('consistency_weight')
+
+        # Add weight for entropy regularization of gate values
+        self.info_dict['lambda_ent'] = info_dict.get('lambda_ent')
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -792,6 +795,14 @@ class CoCoVinTrainer(BaseTrainer):
             # Combine Violin and CoCoS views based on gate values
             # Expand gate_values to match the dimensions of logits
             gate_expanded = gate_values.unsqueeze(1).expand_as(aug_logits)
+
+            # Calculate entropy regularization term for gates
+            # Avoid numerical instability with clipping
+            eps = 1e-8
+            gate_values_clipped = torch.clamp(gate_values, eps, 1 - eps)
+            entropy_term = -(gate_values_clipped * torch.log(gate_values_clipped) +
+                             (1 - gate_values_clipped) * torch.log(1 - gate_values_clipped)).mean()
+
             # print gate distribution statistics for debugging
             if epoch_i % 50 == 0:
                 print(f"Epoch {epoch_i:03d} | Gate stats - min: {gate_values.min().item():.4f}, max: {gate_values.max().item():.4f}, mean: {gate_values.mean().item():.4f}, std: {gate_values.std().item():.4f}")
@@ -822,6 +833,10 @@ class CoCoVinTrainer(BaseTrainer):
             # Add consistency loss (between gated embeddings and original)
             cons_weight = self.info_dict['consistency_weight']
             main_loss = main_loss + cons_weight * consistency_loss
+
+            # Add entropy regularization term (with negative sign to maximize entropy)
+            lambda_ent = self.info_dict.get('lambda_ent')  # Default value if not provided
+            main_loss = main_loss - lambda_ent * entropy_term
 
             # Optimization step
             self.unified_opt.zero_grad()
