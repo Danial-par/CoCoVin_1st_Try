@@ -77,6 +77,11 @@ class ViolinGCN(GCN):
         super().__init__(info_dict)
 
 
+class CoCoVinGCN(GCN):
+    def __init__(self, info_dict):
+        super().__init__(info_dict)
+
+
 class GAT(nn.Module):
     def __init__(self, info_dict, use_attn_dst=True):
         super().__init__()
@@ -95,7 +100,6 @@ class GAT(nn.Module):
             self.enc.append(GATConv(in_dim, out_dim, heads=num_heads, dropout=info_dict['attn_drop']))
             self.norms.append(nn.BatchNorm1d(num_heads * out_dim) if bn else nn.Identity())
 
-            
         self.input_drop = nn.Dropout(info_dict['input_drop'])
         self.dropout = nn.Dropout(info_dict['dropout'])
         self.activation = F.relu
@@ -107,7 +111,6 @@ class GAT(nn.Module):
             if not self.use_attn_dst:
                 x = (x, None)
             h = self.enc[i](x, edge_index)
-            
 
             if i < self.n_layers - 1:
                 h = self.norms[i](h)
@@ -161,7 +164,7 @@ class SAGE(nn.Module):
 
         for i in range(self.n_layers):
             h = self.enc[i](x, edge_index)
-            
+
             if self.use_linear:
                 linear = self.linear[i](x)
                 h = h + linear
@@ -223,7 +226,7 @@ class JKNet(nn.Module):
 
         for i in range(self.n_layers):
             h = self.enc[i](x, edge_index)
-            
+
             if self.use_linear:
                 linear = self.linear[i](x)
                 h = h + linear
@@ -420,7 +423,7 @@ class GIN(nn.Module):
             out_dim = info_dict['hid_dim'] if i < info_dict['n_layers'] - 1 else info_dict['out_dim']
             bn = False if i == (info_dict['n_layers'] - 1) else info_dict['bn']
 
-            self.enc.append(GINConv(nn.Linear(in_dim, out_dim), train_eps=True,))
+            self.enc.append(GINConv(nn.Linear(in_dim, out_dim), train_eps=True, ))
             if use_linear:
                 self.linear.append(nn.Linear(in_dim, out_dim, bias=False))
             self.norms.append(nn.BatchNorm1d(out_dim) if bn else nn.Identity())

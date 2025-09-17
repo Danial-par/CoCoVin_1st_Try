@@ -416,6 +416,8 @@ class GatingMLP(nn.Module):
         # MLP layers to combine node features and confidence scores
         self.fc1 = nn.Linear(input_dim + 1, hidden_dim)  # +1 for the confidence score
         self.fc2 = nn.Linear(hidden_dim, 1)
+        # Dropout layer for regularization
+        self.dropout = nn.Dropout(p=0.5)
 
         # Activation functions
         self.relu = nn.ReLU()
@@ -431,6 +433,7 @@ class GatingMLP(nn.Module):
 
         # Pass through MLP
         x = self.relu(self.fc1(x))
+        x = self.dropout(x)
         x = self.sigmoid(self.fc2(x))
 
         return x.squeeze(1)  # Return [N] tensor of gating values between 0-1
@@ -493,21 +496,6 @@ class CoCoVinTrainer(BaseTrainer):
 
         # Add weight for consistency loss (between gated and original embeddings)
         self.info_dict['consistency_weight'] = info_dict.get('consistency_weight', 0.1)
-
-        # Create EMA model (copy of the backbone)
-        self.ema_model = deepcopy(model)
-        self.ema_model.to(self.info_dict['device'])
-        # Set EMA model to eval mode and disable gradient computation
-        for param in self.ema_model.parameters():
-            param.requires_grad = False
-        # EMA decay rate (adjust as needed - higher value = slower updates)
-        self.ema_decay = 0.99
-
-    def update_ema_model(self):
-        """Update the EMA model parameters using the current model's parameters"""
-        with torch.no_grad():
-            for ema_param, model_param in zip(self.ema_model.parameters(), self.model.parameters()):
-                ema_param.data.mul_(self.ema_decay).add_(model_param.data, alpha=1 - self.ema_decay)
 
     def load_pretr_model(self):
         self.model.load_state_dict(torch.load(self.pretr_model_dir, map_location=self.info_dict['device']))
@@ -579,11 +567,6 @@ class CoCoVinTrainer(BaseTrainer):
                 self.avg_probs = self.ema_alpha * current_probs + (1 - self.ema_alpha) * self.avg_probs
 
     def train(self):
-        # Initialize EMA model with current model parameters
-        with torch.no_grad():
-            for ema_param, model_param in zip(self.ema_model.parameters(), self.model.parameters()):
-                ema_param.data.copy_(model_param.data)
-
         for i in range(self.info_dict['n_epochs']):
             # Get predictions for both methods on regular intervals
             if i % self.info_dict['eta'] == 0:
@@ -790,16 +773,10 @@ class CoCoVinTrainer(BaseTrainer):
             aug_edge_index = self.g.edge_index.to(self.info_dict['device'])
             virt_edge_index = self.virt_edge_index.to(self.info_dict['device']) if self.virt_edge_index is not None else None
 
-            # === Process original graph with EMA model (teacher) ===
-            with torch.no_grad():  # No gradient computation for teacher
-                self.ema_model.eval()  # Teacher is always in eval mode
-                ori_logits = self.ema_model(x_data, ori_edge_index)
-                ori_conf = torch.softmax(ori_logits, dim=1)
-                ori_conf_scores = torch.max(ori_conf, dim=1)[0]  # Max confidence scores for gating
-                # Detach to ensure no gradients flow through teacher
-                ori_logits = ori_logits.detach()
-                ori_conf = ori_conf.detach()
-                ori_conf_scores = ori_conf_scores.detach()
+            # === Process original graph ===
+            ori_logits = self.model(x_data, ori_edge_index)
+            ori_conf = torch.softmax(ori_logits, dim=1)
+            ori_conf_scores = torch.max(ori_conf, dim=1)[0]  # Max confidence scores for gating
 
             # === Process Violin-augmented graph (with virtual edges) ===
             aug_logits = self.model(x_data, aug_edge_index) if virt_edge_index is not None else ori_logits
@@ -815,6 +792,9 @@ class CoCoVinTrainer(BaseTrainer):
             # Combine Violin and CoCoS views based on gate values
             # Expand gate_values to match the dimensions of logits
             gate_expanded = gate_values.unsqueeze(1).expand_as(aug_logits)
+            # print gate distribution statistics for debugging
+            if epoch_i % 50 == 0:
+                print(f"Epoch {epoch_i:03d} | Gate stats - min: {gate_values.min().item():.4f}, max: {gate_values.max().item():.4f}, mean: {gate_values.mean().item():.4f}, std: {gate_values.std().item():.4f}")
             final_logits = gate_expanded * aug_logits + (1 - gate_expanded) * shuf_logits
 
             # === Consistency loss ===
@@ -822,7 +802,7 @@ class CoCoVinTrainer(BaseTrainer):
             consistency_loss = torch.abs(final_logits - ori_logits).mean()
 
             # === Classification Loss ===
-            cls_mode = self.info_dict.get('cls_mode', 'both')  # Default to both
+            cls_mode = self.info_dict.get('cls_mode')
 
             if cls_mode.lower() == 'ori':
                 epoch_cls_loss = self.crs_entropy_fn(ori_logits[cls_nids], cls_labels)
@@ -847,9 +827,6 @@ class CoCoVinTrainer(BaseTrainer):
             self.unified_opt.zero_grad()
             main_loss.backward()
             self.unified_opt.step()
-
-            # After self.unified_opt.step()
-            self.update_ema_model()  # Update EMA model parameters
 
             # Calculate metrics
             epoch_acc = torch.sum(preds == cls_labels).cpu().item() * 1.0 / cls_labels.shape[0]
