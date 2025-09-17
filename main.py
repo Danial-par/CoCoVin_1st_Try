@@ -233,7 +233,7 @@ if __name__ == '__main__':
     parser.add_argument("--consistency_weight", type=float, default=1.0,
                         help="the weight for the consistency loss")
 
-    parser.add_argument("lambda_ent", type=float, default=0.1,
+    parser.add_argument("--lambda_ent", type=float, default=0.1,
                         help="the weight for the entropy minimization loss")
 
     args = parser.parse_args()
