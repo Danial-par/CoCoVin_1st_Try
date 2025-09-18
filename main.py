@@ -230,11 +230,7 @@ if __name__ == '__main__':
     parser.add_argument("--seed", type=int, default=0,
                         help="the random seed to reproduce the result")
 
-    parser.add_argument("--consistency_weight", type=float, default=1.0,
-                        help="the weight for the consistency loss")
-
-    parser.add_argument("--lambda_ent", type=float, default=0.1,
-                        help="the weight for the entropy minimization loss")
+    parser.add_argument("--consistency_weight", type=float, default=0.1,)
 
     args = parser.parse_args()
 
