@@ -444,21 +444,11 @@ class CoCoVinTrainer(BaseTrainer):
 
         # Create two specialized GCNs with same architecture
         self.model_cocos = type(model)(
-            in_dim=self.info_dict['in_dim'],
-            hid_dim=self.info_dict['hid_dim'],
-            out_dim=self.info_dict['out_dim'],
-            n_layers=self.info_dict.get('n_layers', 2),
-            dropout=self.info_dict.get('dropout', 0.0),
-            norm=self.info_dict.get('norm', None)
+            self.info_dict
         ).to(self.info_dict['device'])
 
         self.model_violin = type(model)(
-            in_dim=self.info_dict['in_dim'],
-            hid_dim=self.info_dict['hid_dim'],
-            out_dim=self.info_dict['out_dim'],
-            n_layers=self.info_dict.get('n_layers', 2),
-            dropout=self.info_dict.get('dropout', 0.0),
-            norm=self.info_dict.get('norm', None)
+            self.info_dict
         ).to(self.info_dict['device'])
 
         # Attributes from ViolinTrainer
@@ -967,6 +957,8 @@ class CoCoVinTrainer(BaseTrainer):
         self.model_cocos.eval()
         self.model_violin.eval()
         self.gating_network.eval()
+        val_labels = self.val_y.to(self.info_dict['device'])
+        tt_labels = self.tt_y.to(self.info_dict['device'])
 
         with torch.set_grad_enabled(False):
             x_data = self.g.x.to(self.info_dict['device'])
